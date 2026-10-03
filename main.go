@@ -6,19 +6,25 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jodoherty/virtweb/internal/api"
+	"github.com/jodoherty/virtweb/internal/proxyproto"
 	"github.com/jodoherty/virtweb/internal/sshexec"
 	"github.com/jodoherty/virtweb/internal/stub"
 	"github.com/jodoherty/virtweb/internal/store"
@@ -53,11 +59,27 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "address to listen on")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for persistent data (servers.json)")
 	backendKind := flag.String("backend", "ssh", "backend: ssh (production) or stub (offline demo/test mode)")
+	tlsEnable := flag.Bool("tls", false, "serve HTTPS (requires -tls-cert and -tls-key)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
+	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
+	clientCA := flag.String("client-ca", "", "PEM CA bundle; requires -tls and enables mTLS (client certificates are required and verified)")
+	proxyProto := flag.Bool("proxy-protocol", false, "expect a PROXY protocol (v1/v2) header on each connection, e.g. behind a Traefik L4 pass-through router")
+	proxyFrom := flag.String("proxy-from", "", "with -proxy-protocol: comma-separated source IPs/CIDRs of the proxy; connections from any other source are rejected")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("virtweb " + version)
 		return
+	}
+
+	if *clientCA != "" && !*tlsEnable {
+		log.Fatal("-client-ca requires -tls")
+	}
+	if *tlsEnable && (*tlsCert == "" || *tlsKey == "") {
+		log.Fatal("-tls requires -tls-cert and -tls-key")
+	}
+	if *proxyProto && *proxyFrom == "" {
+		log.Fatal("-proxy-protocol requires -proxy-from (the proxy's source IP/CIDR); without it, any peer on the network could forge the PROXY header")
 	}
 
 	// Frontend is served straight from the embedded filesystem.
@@ -109,22 +131,80 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	go func() {
-		log.Printf("virtweb %s listening on http://%s (data dir: %s)", version, *addr, *dataDir)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	// Listener pipeline: TCP accept -> [PROXY header] -> [TLS/mTLS] ->
+	// HTTP. The PROXY header rides outside TLS (the L4 proxy prepends
+	// it to the raw stream); TLS (and mTLS client-cert auth) is
+	// terminated by virtweb itself.
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *proxyProto {
+		ln, err = proxyproto.New(ln, strings.Split(*proxyFrom, ","))
+		if err != nil {
 			log.Fatal(err)
 		}
-	}()
+	}
+	if *tlsEnable {
+		cfg, err := tlsConfigFromFiles(*tlsCert, *tlsKey, *clientCA)
+		if err != nil {
+			log.Fatal(err)
+		}
+		srv.TLSConfig = cfg
+		if *clientCA != "" {
+			log.Printf("virtweb %s listening on https://%s (mTLS: client certificates required; data dir: %s)", version, *addr, *dataDir)
+		} else {
+			log.Printf("virtweb %s listening on https://%s (data dir: %s)", version, *addr, *dataDir)
+		}
+		go func() {
+			if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
+	} else {
+		log.Printf("virtweb %s listening on http://%s (data dir: %s)", version, *addr, *dataDir)
+		go func() {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
+	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// tlsConfigFromFiles builds the server TLS config. When caFile is
+// non-empty, mTLS is enabled: clients must present a certificate
+// signed by one of the CAs in caFile (RequireAndVerifyClientCert).
+func tlsConfigFromFiles(certFile, keyFile, caFile string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load -tls-cert/-tls-key: %w", err)
+	}
+	cfg := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read -client-ca: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, errors.New("no CA certificates found in -client-ca")
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
 }
 
 // subVendored strips the third-party/<dir> prefix from an embedded

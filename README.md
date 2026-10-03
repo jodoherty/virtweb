@@ -65,11 +65,49 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o virtweb-linux-amd64 .
 | `-data-dir` | `~/.virtweb` | directory for `servers.json` (auto-created) |
 | `-backend` | `ssh` | `ssh` (production: virsh over SSH) or `stub` (offline demo/test) |
 | `-version` | — | print the version and exit |
+| `-tls` | off | serve HTTPS (requires `-tls-cert` and `-tls-key`) |
+| `-tls-cert` / `-tls-key` | — | PEM certificate / private key for `-tls` |
+| `-client-ca` | — | PEM CA bundle; with `-tls` enables **mTLS** (clients must present a cert signed by it) |
+| `-proxy-protocol` | off | expect a PROXY protocol (v1/v2) header on each connection |
+| `-proxy-from` | — | with `-proxy-protocol`: comma-separated proxy source IPs/CIDRs; any other source is rejected |
 
 The server binds to `127.0.0.1` by default. To use it from another
 machine, run it behind a reverse proxy (or listen on a non-loopback
 addr) — the console/VNC/SPICE streams must reach the browser
-**unbuffered**; see "Reverse proxy notes" below.
+**unbuffered**; see "Reverse proxy notes" and "TLS / mTLS / PROXY
+protocol" below.
+
+## TLS, mTLS, and the PROXY protocol (reverse-proxy deployment)
+
+virtweb terminates its own TLS (and optional mTLS client-cert auth),
+and can accept the [PROXY protocol](https://www.haproxy.org/project/proxy-protocol/) that
+an L4 load balancer (e.g. a Traefik TCP pass-through router) prepends to
+each connection to carry the original client address across an internal
+network.
+
+The listener pipeline is fixed order:
+
+```
+TCP accept  ->  PROXY header (v1/v2, outside TLS)  ->  TLS / mTLS  ->  HTTP
+```
+
+- `-proxy-protocol` makes virtweb read **one** PROXY header per
+  connection before anything else, and requires `-proxy-from` to name
+  the proxy's source address(es). Connections from any other source are
+  rejected *before any data is read* — this is what stops a peer on the
+  internal network from forging the header or bypassing the proxy.
+- `-client-ca` (with `-tls`) enforces **mTLS**: a client that does not
+  present a certificate signed by one of the bundled CAs is refused at
+  the handshake.
+
+Typical flags for a behind-the-proxy deployment:
+
+```sh
+./virtweb -addr 0.0.0.0:8443 -tls \
+  -tls-cert /etc/virtweb/server.pem -tls-key /etc/virtweb/server.key \
+  -client-ca /etc/virtweb/client-ca.pem \
+  -proxy-protocol -proxy-from 10.0.0.1
+```
 
 ## Requirements
 
@@ -122,11 +160,15 @@ page until the SSH access is fixed.
 
 The console/VNC/SPICE transport is a long-lived, chunked HTTP response
 plus small POSTs. If you put virtweb behind a proxy (nginx, Caddy,
-h2/tls-terminating front-end, …), make sure the streaming responses are
-**passed through unbuffered** — virtweb sends `X-Accel-Buffering: no` and
+Traefik, …), make sure the streaming responses are **passed through
+unbuffered** — virtweb sends `X-Accel-Buffering: no` and
 `Cache-Control: no-cache` for this, but your proxy must honour (or
 equivalent) no-buffering, or console/display updates will arrive in
-batches instead of live.
+batches instead of live. For the L4 pass-through + PROXY protocol +
+mTLS topology, see "TLS, mTLS, and the PROXY protocol" above: the proxy
+forwards the raw TLS stream (with the PROXY header outside it), so the
+no-buffering requirement is on the TCP-forwarding path, and virtweb
+terminates TLS/mTLS itself.
 
 ## Managing VMs
 
