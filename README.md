@@ -2,9 +2,14 @@
 
 A web-based management dashboard for remote libvirt (KVM/QEMU) hosts.
 
+> **Status:** M1–M4 done (server management, VM list, VM actions, serial
+> console over plain HTTP streams — chunked GET `ReadableStream` + POST
+> input, no WebSocket). VNC viewer (M6) not started.
+> See `TODO.md`/`ROADMAP.md` in the parent directory for exact state.
+
 - Add/remove libvirt servers (reached over SSH using the system `ssh` client)
 - View and manage virtual machines (start, shutdown, reboot, destroy)
-- Use virtual machines: serial console (WebSocket → `ssh -tt` → `virsh console`)
+- Use virtual machines: serial console (HTTP stream → `ssh -tt` → `virsh console`)
   and VNC (SSH stdio tunnel + in-browser RFB client)
 
 ## Tech stack

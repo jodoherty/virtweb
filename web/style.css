@@ -82,3 +82,19 @@ tr.running td:first-child::before { content: '● '; color: #4caf50; }
 tr.stopped td:first-child::before { content: '○ '; color: var(--muted); }
 
 .muted { color: var(--muted); }
+
+.console-term {
+  background: #111418;
+  color: #d7dee6;
+  font-family: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  padding: 0.6rem 0.8rem;
+  border-radius: 4px;
+  min-height: 22rem;
+  max-height: 70vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.console-term:focus { outline: 2px solid var(--accent, #4d90fe); outline-offset: -2px; }

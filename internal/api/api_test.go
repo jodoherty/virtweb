@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"git.theodohertyfamily.com/virtweb/internal/store"
-	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/store"
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 type fakeBackend struct {
@@ -52,7 +52,20 @@ func (f *fakeBackend) Reboot(ctx context.Context, name string) error {
 	return f.record(ctx, "reboot "+name)
 }
 func (f *fakeBackend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {
-	return f.record(ctx, "console "+name)
+	f.record(ctx, "console "+name)
+	// echo stdin to stdout until stdin closes, like a console session
+	buf := make([]byte, 1024)
+	for {
+		n, err := in.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+		}
+		if err != nil {
+			return nil
+		}
+	}
 }
 
 type fakeFactory struct {

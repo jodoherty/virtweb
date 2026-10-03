@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
-	"git.theodohertyfamily.com/virtweb/internal/api"
-	"git.theodohertyfamily.com/virtweb/internal/sshexec"
-	"git.theodohertyfamily.com/virtweb/internal/store"
-	"git.theodohertyfamily.com/virtweb/internal/virt"
-	"git.theodohertyfamily.com/virtweb/internal/virsh"
+	"github.com/jodoherty/virtweb/internal/api"
+	"github.com/jodoherty/virtweb/internal/sshexec"
+	"github.com/jodoherty/virtweb/internal/store"
+	"github.com/jodoherty/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/virsh"
 )
 
 //go:embed all:web
@@ -44,7 +44,8 @@ func main() {
 	apiSrv := api.New(st, &backendFactory{ssh: &sshexec.Std{}})
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/", apiSrv.Routes())
+	apiRoutes := apiSrv.Routes()
+	mux.Handle("/api/", apiRoutes)
 	mux.Handle("/", http.FileServerFS(webRoot))
 
 	srv := &http.Server{

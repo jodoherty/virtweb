@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 // Store is a file-backed, concurrency-safe store of server definitions.

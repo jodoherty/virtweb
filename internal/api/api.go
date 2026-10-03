@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"sync"
 
-	"git.theodohertyfamily.com/virtweb/internal/store"
-	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/store"
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 // BackendFactory creates (or returns a cached) backend for a server.
@@ -26,11 +26,15 @@ type API struct {
 	factory   BackendFactory
 	mu        sync.Mutex
 	backends  map[string]virt.Backend
+	conMu     sync.Mutex
+	consoles  map[string]*consoleSession
 }
 
 // New builds an API over the given store and factory.
 func New(st *store.Store, factory BackendFactory) *API {
-	return &API{st: st, factory: factory, backends: map[string]virt.Backend{}}
+	return &API{st: st, factory: factory,
+		backends: map[string]virt.Backend{},
+		consoles: map[string]*consoleSession{}}
 }
 
 // backend returns the cached backend for a server id.
@@ -59,6 +63,8 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/vms", a.handleListVMs)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/{action}", a.handleVMAction)
 	mux.HandleFunc("GET /api/servers/{id}/ping", a.handlePing)
+	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
+	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/console/input", a.handleConsoleInput)
 	return mux
 }
 

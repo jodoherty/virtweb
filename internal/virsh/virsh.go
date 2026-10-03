@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"git.theodohertyfamily.com/virtweb/internal/sshexec"
-	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/sshexec"
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 // callTimeout bounds each individual virsh invocation.
@@ -36,9 +36,12 @@ func New(srv virt.Server, run sshexec.Runner) *Backend {
 func (b *Backend) virsh(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	cmd := append([]string{"-c", shellQuote(b.srv.URI)}, args...)
+	cmd := []string{"virsh", shellQuote("-c"), shellQuote(b.srv.URI)}
+	for _, a := range args {
+		cmd = append(cmd, shellQuote(a))
+	}
 	out, err := b.run.Run(ctx, b.srv.User, b.srv.Host, b.srv.Port,
-		"virsh "+shellQuote(strings.Join(cmd, " ")))
+		strings.Join(cmd, " "))
 	if err != nil {
 		return "", err
 	}

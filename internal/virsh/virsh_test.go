@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 type fakeRunner struct {
@@ -25,7 +25,6 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, _, _ string, _ int, command string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	command = normalize(command)
 	f.commands = append(f.commands, command)
 	if f.fn != nil {
 		return f.fn(command)
@@ -41,7 +40,7 @@ func (f *fakeRunner) Run(_ context.Context, _, _ string, _ int, command string) 
 
 func (f *fakeRunner) Connect(_ context.Context, _, _ string, _ int, _ bool, command string, in io.Reader, out io.Writer) error {
 	f.mu.Lock()
-	f.commands = append(f.commands, normalize(command))
+	f.commands = append(f.commands, command)
 	f.mu.Unlock()
 	// emulate an echo console: copy stdin to out, then write a banner.
 	io.Copy(out, in)
@@ -109,15 +108,6 @@ func newFake() (*fakeRunner, *Backend) {
 }
 
 var errNoAddr = errors.New("no ip address")
-
-// normalize strips the outer shell quoting that virsh() applies so tests
-// can key on the plain remote command line.
-func normalize(cmd string) string {
-	if rest, ok := strings.CutPrefix(cmd, "virsh '"); ok && strings.HasSuffix(cmd, "'") {
-		return "virsh " + strings.TrimSuffix(rest, "'")
-	}
-	return cmd
-}
 
 func TestListVMs(t *testing.T) {
 	_, b := newFake()

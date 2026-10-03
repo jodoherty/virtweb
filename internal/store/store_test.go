@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 func TestAddListGetRemove(t *testing.T) {
