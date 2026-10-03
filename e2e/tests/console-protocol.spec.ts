@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { requireEnv } from '../src/envinfo.js';
 import { Api, ApiError } from '../src/api.js';
 import { openConsole, ConsoleSession, waitForNoSession } from '../src/console.js';
+import { FrameDecoder } from '../src/frames.js';
 import { waitFor } from '../src/wait.js';
 import { startStub } from '../src/stubInstance.js';
 
@@ -83,6 +84,50 @@ test('client disconnect kills the session; input after close -> 404', async () =
 });
 
 /* ---------- STUB_SCENARIO error paths (disposable instances) ---------- */
+
+test('idle stream emits KEEPALIVE frames while quiet', async () => {
+  // Proxy-timeout protection (wire protocol v1): with a short
+  // keepalive interval, an idle console stream must not go quiet —
+  // the server emits KEEPALIVE frames while the session is silent.
+  const inst = await startStub({ flags: ['-keepalive', '200ms'] });
+  try {
+    // The stub console requires a running domain (the shared env's
+    // beforeAll boots it; a fresh instance starts with it shut off).
+    const api2 = new Api(inst.url);
+    await api2.action(inst.serverId, 'debian-dev', 'start');
+    await waitFor(async () => {
+      const vms = await api2.listVMs(inst.serverId);
+      return vms.find((v) => v.name === 'debian-dev')?.state === 'running';
+    }, { message: 'debian-dev running', timeout: 5000 });
+
+    const res = await fetch(
+      `${inst.url}/api/servers/${inst.serverId}/vms/debian-dev/console/stream`,
+    );
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    let sawData = false;
+    let sawKeepalive = false;
+    const frames = new FrameDecoder(() => {
+      sawKeepalive = true;
+    });
+    try {
+      const deadline = Date.now() + 5000;
+      while (!sawKeepalive && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (frames.feed(value).length > 0) sawData = true;
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    // The stub banner arrives as DATA first, then the stream goes idle
+    // and keepalives start.
+    expect(sawData).toBe(true);
+    expect(sawKeepalive).toBe(true);
+  } finally {
+    await inst.close();
+  }
+});
 
 test('scenario fail-ping: ping fails, list works', async () => {
   const inst = await startStub({ scenario: 'fail-ping' });

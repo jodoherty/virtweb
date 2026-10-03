@@ -147,11 +147,16 @@ the guest in a known, inspectable state.
 
 - `src/envinfo.js` — `requireEnv()` (loads the manifest), `envUrl()`.
 - `src/api.js` — `Api` (fetch wrappers for the REST API).
+- `src/frames.js` — wire protocol v1 (mirrors
+  `web/static/duplex.js` / `internal/api/frame.go`): `encodeFrame`,
+  `TAG`, `FrameDecoder` (reassembly + HELLO check + optional
+  keepalive observer). The session helpers below speak frames, not raw
+  bytes.
 - `src/console.js` — `openConsole()` / `ConsoleSession`: consumes the
-  chunked console GET stream and records **every byte** (both
+  console stream (DATA payloads) and records **every byte** (both
   directions) to `test-results/` for the failing spec.
 - `src/tunnel.js` — `openTunnel()` / `TunnelSession`: same, for the
-  generic TCP tunnel (VNC/SPICE).
+  generic TCP tunnel (VNC/SPICE); `chunkCount` counts DATA frames.
 - `src/wait.js` — `waitFor(fn, {timeout, interval})` (poll-with-deadline;
   never fixed sleeps), `sleep`.
 

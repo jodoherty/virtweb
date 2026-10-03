@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,9 +51,11 @@ func TestTunnelStreamRoundTrip(t *testing.T) {
 		out <- buf
 	}()
 
-	// Input is routed by session id and echoes back through the tunnel.
+	// Input is routed by session id (as a DATA frame) and echoes back
+	// through the tunnel.
 	inRes, err := client.Post(inputURL+"?id="+sid,
-		"application/octet-stream", strings.NewReader("hello"))
+		"application/octet-stream",
+		bytes.NewReader(encodeTestFrame(t, frameData, []byte("hello"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,11 +67,26 @@ func TestTunnelStreamRoundTrip(t *testing.T) {
 	// the backend context and ends the session.
 	res.Body.Close()
 	buf := <-out
+	frames, rest, ferr := framesFrom(buf)
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	if len(rest) != 0 || len(frames) < 2 {
+		t.Fatalf("streamed frames = %+v rest=%d, want HELLO + DATA", frames, len(rest))
+	}
+	// The fake tunnel writes several chunks; each becomes its own DATA
+	// frame. Concatenate the payloads.
+	var got strings.Builder
+	for _, fr := range frames {
+		if fr.tag == frameData {
+			got.Write(fr.payload)
+		}
+	}
 	// The destination is resolved server-side: vm1's SPICE display is
 	// 127.0.0.1:5991 in the fake backend.
 	want := "stub-tunnel: vm1 127.0.0.1:5991\nchunk 1\nchunk 2\nhello"
-	if string(buf) != want {
-		t.Fatalf("streamed output = %q, want %q", buf, want)
+	if frames[0].tag != frameHello || got.String() != want {
+		t.Fatalf("streamed = HELLO:%v payload %q, want %q", frames[0], got.String(), want)
 	}
 }
 

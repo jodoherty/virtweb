@@ -4,6 +4,7 @@
 // console.js; every byte in both directions is appended to logPath.
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { FrameDecoder, encodeFrame, TAG } from './frames.js';
 
 export class TunnelSession {
   /**
@@ -40,6 +41,7 @@ export class TunnelSession {
 
     const reader = this.res.body.getReader();
     this._reader = reader;
+    this.frames = new FrameDecoder();
     this._record = (label, bytes) => {
       if (!logPath) return;
       mkdirSync(path.dirname(logPath), { recursive: true });
@@ -57,10 +59,15 @@ export class TunnelSession {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        this.chunkCount++;
-        this.text += this.output.decode(value, { stream: true });
-        onChunk?.(value);
         this._record('<<', value);
+        // The downlink speaks wire protocol v1: each DATA frame is one
+        // unit of incremental arrival (KEEPALIVEs dropped, HELLO
+        // checked), so chunkCount counts DATA frames.
+        for (const payload of this.frames.feed(value)) {
+          this.chunkCount++;
+          this.text += this.output.decode(payload, { stream: true });
+          onChunk?.(payload);
+        }
       }
       this.text += this.output.decode();
     })();
@@ -71,14 +78,15 @@ export class TunnelSession {
     return this;
   }
 
-  // Sends raw input bytes; returns the HTTP status of the POST.
+  // Sends raw input bytes (wrapped in a DATA frame); returns the HTTP
+  // status of the POST.
   async input(bytes) {
     const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
     this._record?.('>>', data);
     const res = await fetch(this.inputUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: data,
+      body: encodeFrame(TAG.data, data),
     });
     await res.body?.cancel().catch(() => {});
     return res.status;

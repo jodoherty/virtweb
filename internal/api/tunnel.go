@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -127,8 +126,11 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 	// The session handle for input POSTs.
 	w.Header().Set("X-Tunnel-Id", sid)
 	w.WriteHeader(http.StatusOK)
-	if flusher != nil {
-		flusher.Flush()
+	// Announce the wire protocol (v1) before any tunnel bytes; the
+	// client fails fast on a non-matching stream (see frame.go).
+	if err := writeHello(w, flusher); err != nil {
+		log.Printf("tunnel %s %s: hello: %v", name, target, err)
+		return
 	}
 
 	// Run the tunnel; when it ends (remote end hung up, ssh error, or
@@ -142,25 +144,8 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	buf := make([]byte, 32*1024)
 	pumpDone := make(chan struct{})
-	go func() {
-		defer close(pumpDone)
-		for {
-			n, err := s.outRead.Read(buf)
-			if n > 0 {
-				if _, werr := w.Write(buf[:n]); werr != nil {
-					return
-				}
-				if flusher != nil {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	go pumpFramed(s.outRead, w, a.keepalive, pumpDone)
 	select {
 	case <-r.Context().Done(): // client disconnected
 	case <-pumpDone:          // tunnel output ended
@@ -173,7 +158,9 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTunnelInput writes one input chunk to the tunnel session
-// named by ?id=<sid>. The body is raw bytes (application/octet-stream).
+// named by ?id=<sid>. The body is one wire-protocol frame (usually a
+// DATA frame carrying the display bytes, or a KEEPALIVE from an idle
+// client).
 func (a *API) handleTunnelInput(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("id")
 	if sid == "" {
@@ -187,13 +174,25 @@ func (a *API) handleTunnelInput(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no tunnel session %q open", sid)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxTunnelInputBody))
+	tag, payload, err := readFrameBody(r, maxTunnelInputBody)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "read input: %v", err)
+		writeErr(w, http.StatusBadRequest, "input frame: %v", err)
 		return
 	}
-	if err := s.write(body); err != nil {
-		writeErr(w, http.StatusNotFound, "tunnel session %q is not open", sid)
+	switch tag {
+	case frameKeepalive:
+		// A liveness signal from an idle client; nothing to do.
+	case frameData:
+		if len(payload) == 0 {
+			writeErr(w, http.StatusBadRequest, "empty DATA frame")
+			return
+		}
+		if err := s.write(payload); err != nil {
+			writeErr(w, http.StatusNotFound, "tunnel session %q is not open", sid)
+			return
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "unexpected frame tag 0x%02x", tag)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

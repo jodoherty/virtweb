@@ -66,6 +66,7 @@ func main() {
 	proxyProto := flag.Bool("proxy-protocol", false, "expect a PROXY protocol (v1/v2) header on each connection, e.g. behind a Traefik L4 pass-through router")
 	proxyFrom := flag.String("proxy-from", "", "with -proxy-protocol: comma-separated source IPs/CIDRs of the proxy; connections from any other source are rejected")
 	hostKeyChecking := flag.String("host-key-checking", "accept-new", "ssh -o StrictHostKeyChecking value: accept-new (default: trust first contact, verify afterwards), yes, no (known_hosts only), or off")
+	keepalive := flag.Duration("keepalive", api.DefaultKeepalive, "stream keepalive: emit an idle-keepalive frame on console/tunnel streams after this much silence (0 disables); keep it well under your reverse proxy's idle/read timeout")
 	flag.Parse()
 
 	if *showVersion {
@@ -114,7 +115,7 @@ func main() {
 		log.Fatalf("unknown -backend %q (want ssh or stub)", *backendKind)
 	}
 
-	apiSrv := api.New(st, factory)
+	apiSrv := api.New(st, factory, api.WithKeepalive(*keepalive))
 	ui, err := webui.New(st, factory, webRoot)
 	if err != nil {
 		log.Fatal(err)

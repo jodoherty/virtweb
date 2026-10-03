@@ -71,6 +71,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o virtweb-linux-amd64 .
 | `-proxy-protocol` | off | expect a PROXY protocol (v1/v2) header on each connection |
 | `-proxy-from` | — | with `-proxy-protocol`: comma-separated proxy source IPs/CIDRs; any other source is rejected |
 | `-host-key-checking` | `accept-new` | ssh `StrictHostKeyChecking`: `accept-new` (trust first contact, verify afterwards), `yes`, `no` (known_hosts only), or `off` |
+| `-keepalive` | `15s` | stream idle keepalive: after this much silence a console/tunnel stream emits a keepalive frame (0 disables). Keep it well under your reverse proxy's idle/read timeout |
 
 The server binds to `127.0.0.1` by default. To use it from another
 machine, run it behind a reverse proxy (or listen on a non-loopback
@@ -195,11 +196,60 @@ Traefik, …), make sure the streaming responses are **passed through
 unbuffered** — virtweb sends `X-Accel-Buffering: no` and
 `Cache-Control: no-cache` for this, but your proxy must honour (or
 equivalent) no-buffering, or console/display updates will arrive in
-batches instead of live. For the L4 pass-through + PROXY protocol +
+batches instead of live.
+
+**Timeouts:** the streams must also survive the proxy's read/idle
+timeouts. virtweb emits idle KEEPALIVE frames on both sides of every
+stream (default: after 15 s of silence; tune with `-keepalive`) — see
+"Transport wire format (v1)" — so with keepalives a stream never goes
+quiet; keep the proxy's idle timeout above ~2× the keepalive interval
+(or raise it on the stream routes) as defense-in-depth.
+
+For the L4 pass-through + PROXY protocol +
 mTLS topology, see "TLS, mTLS, and the PROXY protocol" above: the proxy
 forwards the raw TLS stream (with the PROXY header outside it), so the
 no-buffering requirement is on the TCP-forwarding path, and virtweb
 terminates TLS/mTLS itself.
+
+## Transport wire format (v1)
+
+The console and display streams are not raw byte pipes: both
+directions speak a small length-framed protocol, one frame per
+flush:
+
+```
+frame := [tag:1][len:4 big-endian][payload]
+```
+
+| tag | name | use |
+|-----|------|-----|
+| `0x01` | HELLO | first frame of every downlink stream; payload `[version=1][flags=0]`. Clients refuse non-matching streams |
+| `0x02` | DATA | the session's raw bytes (console output/keystrokes, RFB, SPICE per channel). Each uplink POST body is one DATA frame |
+| `0x03` | KEEPALIVE | empty; emitted by *each direction* while it has been idle for the keepalive interval |
+
+Why frames exist, given virtweb is an opaque byte tunnel:
+
+- **Idle keepalives survive any proxy topology.** An idle serial
+  console or a static display is byte-silent; a TCP reverse proxy with
+  its own read/idle timeouts would cut it. Each stream pings itself
+  (server pings the downlink, the browser pings the uplink), so no
+  stream can go quiet for longer than ~2× the interval — under L4/h2,
+  L7, or h1.1. The keepalive *cannot* live in the guest protocol
+  (RFB/SPICE/pty) because virtweb doesn't parse it; it lives one layer
+  up, in frames the tunnel itself emits.
+- **Corruption is detectable.** Without framing, a byte dropped
+  mid-stream desyncs a VNC/SPICE session silently; a torn or
+  over-size frame fails the channel cleanly ("connection lost" +
+  Reconnect) instead.
+- **Extension point.** The HELLO flags byte (currently 0) advertises
+  future capabilities — e.g. in-band terminal frames — without
+  changing the frame shape.
+
+The browser parses the frames in `web/static/duplex.js`
+(`FrameDecoder`); the consumers (xterm, noVNC, the SPICE fork) only
+see DATA payloads. Terminal state in v1 is the stream itself: a clean
+server-side EOF means "session ended", an aborted connection means
+"connection lost".
 
 ## Managing VMs
 

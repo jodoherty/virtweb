@@ -27,6 +27,90 @@
 //   in order. close() aborts the GET, which ends the server session
 //   through the request context. A failed uplink POST or downlink
 //   failure terminates the whole channel.
+//
+// Wire protocol (v1; mirrored server-side in internal/api/frame.go and
+// in the e2e harness in e2e/src/frames.js): every direction speaks
+// length-framed, tagged frames — [tag:1][len:4 big-endian][payload].
+// Tags: HELLO (0x01, downlink, first frame, [version][flags] payload),
+// DATA (0x02, the session's raw bytes), KEEPALIVE (0x03, empty, idle
+// liveness). Each uplink POST body is exactly one frame. The framing
+// exists so (a) idle streams can't trip a reverse proxy's read/idle
+// timeouts — each direction emits KEEPALIVEs while silent — and (b) a
+// corrupted/truncated stream is detectable instead of silently
+// desyncing the guest protocol. Consumers of this channel (xterm,
+// noVNC, the SPICE fork) only ever see DATA payloads.
+
+const FRAME = {
+  hello: 0x01,
+  data: 0x02,
+  keepalive: 0x03,
+};
+const PROTO_VERSION = 1;
+const MAX_FRAME_PAYLOAD = 16 * 1024 * 1024; // parser bound, not a perf knob
+
+// encodeFrame builds one [tag][len:4 BE][payload] frame.
+export function encodeFrame(tag, payload) {
+  const out = new Uint8Array(5 + payload.length);
+  out[0] = tag;
+  out[1] = (payload.length >>> 24) & 0xff;
+  out[2] = (payload.length >>> 16) & 0xff;
+  out[3] = (payload.length >>> 8) & 0xff;
+  out[4] = payload.length & 0xff;
+  out.set(payload, 5);
+  return out;
+}
+
+// FrameDecoder reassembles frames from raw stream chunks and reports
+// their DATA payloads (HELLO is validated once, KEEPALIVEs dropped).
+// It throws on a torn/oversized/unknown frame — the caller fails the
+// channel, which surfaces as "connection lost" to the UI.
+class FrameDecoder {
+  constructor() {
+    this.pending = null; // Uint8Array: not-yet-framed trailing bytes
+    this.helloSeen = false;
+  }
+  feed(chunk) {
+    const old = this.pending;
+    const buf = new Uint8Array((old ? old.length : 0) + chunk.length);
+    if (old) buf.set(old, 0);
+    buf.set(chunk, old ? old.length : 0);
+    this.pending = buf;
+    const payloads = [];
+    for (;;) {
+      if (this.pending.length < 5) break;
+      const p = this.pending;
+      const tag = p[0];
+      const len = ((p[1] << 24) | (p[2] << 16) | (p[3] << 8) | p[4]) >>> 0;
+      if (len > MAX_FRAME_PAYLOAD) {
+        throw new Error('frame payload exceeds the maximum');
+      }
+      if (this.pending.length < 5 + len) break; // incomplete frame
+      const payload = this.pending.slice(5, 5 + len); // copy
+      // Re-slice from the head; the next feed() re-copies, so the large
+      // backing array is released.
+      this.pending = this.pending.subarray(5 + len);
+      switch (tag) {
+        case FRAME.hello:
+          if (this.helloSeen) throw new Error('duplicate HELLO frame');
+          if (payload.length !== 2 || payload[0] !== PROTO_VERSION) {
+            throw new Error(
+              `unsupported protocol version ${payload.length ? payload[0] : '(none)'}`,
+            );
+          }
+          this.helloSeen = true;
+          break;
+        case FRAME.data:
+          payloads.push(payload);
+          break;
+        case FRAME.keepalive:
+          break; // idle liveness; nothing to deliver
+        default:
+          throw new Error('unknown frame tag 0x' + tag.toString(16));
+      }
+    }
+    return payloads;
+  }
+}
 
 function toBytes(chunk) {
   if (chunk instanceof Uint8Array) return chunk;
@@ -47,6 +131,10 @@ export class DuplexChannel {
     // connectTimeoutMs bounds how long open() may wait for the GET
     // response headers before giving up (0 disables the bound).
     this.connectTimeoutMs = options.connectTimeoutMs ?? 20_000;
+    // keepaliveMs: emit an idle uplink KEEPALIVE frame after this much
+    // silence (covers client-leg idle timeouts; the server pings the
+    // downlink on its own). 0 disables.
+    this.keepaliveMs = options.keepaliveMs ?? 15_000;
 
     this._ctrl = null;
     this._opened = false;
@@ -57,6 +145,8 @@ export class DuplexChannel {
     this._openTimer = null;
     this._openResolve = null;
     this._openReject = null;
+    this._kaTimer = null; // uplink keepalive interval
+    this._lastUplink = 0; // last uplink send (for idle gating)
 
     // Uplink: chunks waiting for open, plus the serialized POST chain
     // (head-of-line ordering; see file comment).
@@ -151,6 +241,7 @@ export class DuplexChannel {
     }
     this._opened = true;
     this._openResolve();
+    this._startKeepalive();
     this._flushPending();
     this._pumpDownlink(res.body);
   }
@@ -158,12 +249,15 @@ export class DuplexChannel {
   _pumpDownlink(body) {
     const reader = body.getReader();
     this._reader = reader;
+    const frames = new FrameDecoder();
     (async () => {
       try {
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
-          this._sink.enqueue(value);
+          for (const payload of frames.feed(value)) {
+            if (!this._closed) this._sink.enqueue(payload);
+          }
         }
         if (!this._closed) {
           this._reason = 'ended';
@@ -203,20 +297,59 @@ export class DuplexChannel {
   _send(item) {
     const p = this._chain.then(async () => {
       if (this._closed) throw new Error('channel is closed');
+      // The uplink speaks frames too (protocol v1): wrap the payload in
+      // a DATA frame (keepalives are sent as their own frames).
       const res = await fetch(this._inputUrlFor(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
-        body: item.bytes,
+        body: item.frame ?? encodeFrame(FRAME.data, item.bytes),
         keepalive: true,
       });
       if (!res.ok) throw new Error('uplink rejected: HTTP ' + res.status);
       await res.body?.cancel().catch(() => {});
     });
     p.then(
-      () => item.resolve(),
+      () => {
+        this._lastUplink = Date.now();
+        item.resolve();
+      },
       (err) => { item.reject(err); this._fail(err); },
     );
     this._chain = p.catch(() => {});
+  }
+
+  // Uplink keepalives: an idle client is invisible to the network, so
+  // while the channel is open and no uplink has gone out for
+  // keepaliveMs, send an empty KEEPALIVE frame. This keeps the client
+  // leg of the connection warm (NATs, mobile OSes, proxy idle
+  // timeouts); the server pings the downlink on its own. Hidden-tab
+  // timer throttling degrades this to ~1/min, which is still useful.
+  _startKeepalive() {
+    if (this.keepaliveMs <= 0) return;
+    const tick = Math.max(this.keepaliveMs / 2, 250);
+    this._lastUplink = Date.now();
+    this._kaTimer = setInterval(() => {
+      if (!this._opened || this._closed) {
+        this._stopKeepalive();
+        return;
+      }
+      if (Date.now() - this._lastUplink < this.keepaliveMs) return;
+      this._lastUplink = Date.now();
+      this._send({
+        bytes: new Uint8Array(0),
+        frame: encodeFrame(FRAME.keepalive, new Uint8Array(0)),
+        resolve: () => {},
+        reject: () => {},
+      });
+    }, tick);
+    if (typeof this._kaTimer.unref === 'function') this._kaTimer.unref();
+  }
+
+  _stopKeepalive() {
+    if (this._kaTimer) {
+      clearInterval(this._kaTimer);
+      this._kaTimer = null;
+    }
   }
 
   // The uplink URL for the current session: the base inputUrl with the
@@ -235,6 +368,7 @@ export class DuplexChannel {
     if (this._closed) return;
     this._closed = true;
     this._reason = 'closed';
+    this._stopKeepalive();
     this._abortGet();
     this._doneRes(undefined);
   }
@@ -243,6 +377,7 @@ export class DuplexChannel {
     if (this._closed) return;
     this._closed = true;
     this._reason = 'error';
+    this._stopKeepalive();
     try {
       if (!this._sink.closed) this._sink.error(err);
     } catch { /* sink already settled */ }

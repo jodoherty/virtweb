@@ -103,14 +103,17 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	defer a.dropConsole(key, s)
 
 	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	// Reverse proxies must pass the stream through unbuffered and
 	// uncompressed (h2 or not); see AGENTS.md.
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	if flusher != nil {
-		flusher.Flush()
+	// Announce the wire protocol (v1) before any console bytes; the
+	// client fails fast on a non-matching stream (see frame.go).
+	if err := writeHello(w, flusher); err != nil {
+		log.Printf("console %s: hello: %v", name, err)
+		return
 	}
 
 	// Run the console session; when it ends (VM hung up, session error,
@@ -124,25 +127,8 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	buf := make([]byte, 32*1024)
 	pumpDone := make(chan struct{})
-	go func() {
-		defer close(pumpDone)
-		for {
-			n, err := s.outRead.Read(buf)
-			if n > 0 {
-				if _, werr := w.Write(buf[:n]); werr != nil {
-					return
-				}
-				if flusher != nil {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+	go pumpFramed(s.outRead, w, a.keepalive, pumpDone)
 	select {
 	case <-r.Context().Done(): // client disconnected
 	case <-pumpDone:          // console output ended
@@ -155,7 +141,8 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleConsoleInput writes one keystroke batch to an open console
-// session. The body is raw bytes (application/octet-stream).
+// session. The body is one wire-protocol frame (usually a DATA frame
+// carrying the keystroke bytes, or a KEEPALIVE from an idle client).
 func (a *API) handleConsoleInput(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
 	a.conMu.Lock()
@@ -165,13 +152,25 @@ func (a *API) handleConsoleInput(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no console session open for %q", name)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxInputBody))
+	tag, payload, err := readFrameBody(r, maxInputBody)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "read input: %v", err)
+		writeErr(w, http.StatusBadRequest, "input frame: %v", err)
 		return
 	}
-	if err := s.write(body); err != nil {
-		writeErr(w, http.StatusNotFound, "console session for %q is not open", name)
+	switch tag {
+	case frameKeepalive:
+		// A liveness signal from an idle client; nothing to do.
+	case frameData:
+		if len(payload) == 0 {
+			writeErr(w, http.StatusBadRequest, "empty DATA frame")
+			return
+		}
+		if err := s.write(payload); err != nil {
+			writeErr(w, http.StatusNotFound, "console session for %q is not open", name)
+			return
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "unexpected frame tag 0x%02x", tag)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

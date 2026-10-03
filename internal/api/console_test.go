@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,9 +66,10 @@ func TestConsoleStreamRoundTrip(t *testing.T) {
 		out <- buf
 	}()
 
-	// Send input: fakeBackend.Console echoes stdin to stdout.
+	// Send input as a DATA frame: fakeBackend.Console echoes stdin to stdout.
 	inRes, err := client.Post(ts.URL+fmt.Sprintf("/api/servers/%s/vms/vm1/console/input", id),
-		"application/octet-stream", strings.NewReader("ping"))
+		"application/octet-stream",
+		bytes.NewReader(encodeTestFrame(t, frameData, []byte("ping"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +81,19 @@ func TestConsoleStreamRoundTrip(t *testing.T) {
 	// the backend context and ends the session.
 	res.Body.Close()
 	buf := <-out
-	if string(buf) != "ping" {
-		t.Fatalf("streamed output = %q, want %q", buf, "ping")
+	frames, rest, err := framesFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 0 || len(frames) != 2 {
+		t.Fatalf("streamed frames = %+v rest=%d, want HELLO + DATA", frames, len(rest))
+	}
+	if frames[0].tag != frameHello ||
+		!bytes.Equal(frames[0].payload, []byte{frameVersion, helloFlags}) {
+		t.Fatalf("first frame = %+v, want HELLO", frames[0])
+	}
+	if frames[1].tag != frameData || string(frames[1].payload) != "ping" {
+		t.Fatalf("second frame = %+v, want DATA ping", frames[1])
 	}
 }
 

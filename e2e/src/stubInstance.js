@@ -19,7 +19,7 @@ function pickPort() {
   });
 }
 
-export async function startStub({ scenario = '' } = {}) {
+export async function startStub({ scenario = '', flags = [] } = {}) {
   if (!existsSync(BINARY)) {
     const r = spawnSync('go', ['build', '-o', BINARY, '.'], {
       cwd: VIRTWEB_ROOT,
@@ -32,7 +32,7 @@ export async function startStub({ scenario = '' } = {}) {
   const logPath = path.join(dataDir, 'virtweb.log');
   const child = spawn(
     BINARY,
-    ['-backend', 'stub', '-addr', `127.0.0.1:${port}`, '-data-dir', dataDir],
+    ['-backend', 'stub', '-addr', `127.0.0.1:${port}`, '-data-dir', dataDir, ...flags],
     {
       env: { ...process.env, ...(scenario ? { STUB_SCENARIO: scenario } : {}) },
       stdio: ['ignore', 'ignore', 'ignore'],

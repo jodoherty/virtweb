@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jodoherty/virtweb/internal/store"
 	"github.com/jodoherty/virtweb/internal/virt"
@@ -35,16 +36,39 @@ type API struct {
 	// cap: each session holds a remote ssh process). 429 when reached.
 	maxConsoles int
 	maxTunnels  int
+	// keepalive is the idle interval after which stream sessions emit
+	// KEEPALIVE frames (wire protocol v1, see frame.go); 0 disables.
+	keepalive time.Duration
+}
+
+// Option configures an API.
+type Option func(*API)
+
+// WithKeepalive sets the stream keepalive interval (see frame.go);
+// 0 disables idle keepalives.
+// DefaultKeepalive is the stream keepalive interval used when no
+// WithKeepalive option is given (see frame.go).
+const DefaultKeepalive = defaultKeepalive
+
+// WithKeepalive sets the stream keepalive interval (see frame.go);
+// 0 disables idle keepalives.
+func WithKeepalive(d time.Duration) Option {
+	return func(a *API) { a.keepalive = d }
 }
 
 // New builds an API over the given store and factory.
-func New(st *store.Store, factory BackendFactory) *API {
-	return &API{st: st, factory: factory,
-		backends: map[string]virt.Backend{},
-		consoles: map[string]*pipeSession{},
-		tunnels:  map[string]*pipeSession{},
+func New(st *store.Store, factory BackendFactory, opts ...Option) *API {
+	a := &API{st: st, factory: factory,
+		backends:    map[string]virt.Backend{},
+		consoles:    map[string]*pipeSession{},
+		tunnels:     map[string]*pipeSession{},
 		maxConsoles: 64,
-		maxTunnels:  64}
+		maxTunnels:  64,
+		keepalive:   defaultKeepalive}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // backend returns the cached backend for a server id.
