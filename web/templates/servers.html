@@ -1,0 +1,33 @@
+{{define "servers"}}
+<h2>Servers</h2>
+<table class="server-table">
+  <tr><th>Name</th><th>Host</th><th>URI</th><th></th></tr>
+  {{range .Servers}}
+  <tr>
+    <td><a href="/servers/{{.ID}}">{{.Name}}</a></td>
+    <td>{{.User}}@{{.Host}}{{if .Port}}:{{.Port}}{{end}}</td>
+    <td class="muted">{{.URI}}</td>
+    <td class="actions">
+      <form method="post" action="/servers/{{.ID}}/remove"
+            onsubmit="return confirm('Remove server {{.Name}}?')">
+        <button class="danger">Remove</button>
+      </form>
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">No servers yet. Add one below.</td></tr>
+  {{end}}
+</table>
+
+<form class="add-server" method="post" action="/servers">
+  <h2>Add server</h2>
+  <div class="row">
+    <input name="name" placeholder="Name" required>
+    <input name="user" placeholder="user" required>
+    <input name="host" placeholder="hostname" required>
+    <input name="port" placeholder="port (22)" type="number" min="1" max="65535">
+    <input name="uri" placeholder="libvirt URI" value="qemu:///system">
+  </div>
+  <button type="submit">Add</button>
+</form>
+{{end}}

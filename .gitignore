@@ -1,3 +1,4 @@
 /virtweb
 *.test
 /data/
+.artifacts/

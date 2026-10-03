@@ -1,0 +1,30 @@
+{{define "server"}}
+<p><a href="/">←</a> <strong>{{.Server.Name}}</strong>
+  <span class="muted">{{.Server.User}}@{{.Server.Host}}{{if .Server.Port}}:{{.Server.Port}}{{end}} — {{.Server.URI}}</span></p>
+<h2>Virtual machines</h2>
+{{if .VMs}}
+<table class="vm-table">
+  <tr><th>Name</th><th>State</th><th>vCPU</th><th>Memory</th><th>IP</th><th>Actions</th></tr>
+  {{range .VMs}}
+  <tr class="{{if .Running}}running{{else}}stopped{{end}}">
+    <td>{{.Name}}</td>
+    <td>{{.State}}</td>
+    <td>{{.VCPUs}}</td>
+    <td>{{if .Memory}}{{.Memory}} MiB{{else}}–{{end}}</td>
+    <td>{{if .IP}}{{.IP}}{{else}}–{{end}}</td>
+    <td class="actions">
+      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/start"><button>Start</button></form>
+      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/shutdown"><button>Shutdown</button></form>
+      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/destroy"
+            onsubmit="return confirm('Destroy {{.Name}} now?')"><button class="danger">Destroy</button></form>
+      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/reboot"><button>Reboot</button></form>
+      <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">Console</a>
+      <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/vnc">VNC</a>
+    </td>
+  </tr>
+  {{end}}
+</table>
+{{else}}
+<p class="muted">No virtual machines (or the host did not respond — see banner above).</p>
+{{end}}
+{{end}}

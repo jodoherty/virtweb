@@ -1,0 +1,19 @@
+{
+  "name": "virtweb-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "env:up": "node src/cli/env.js up",
+    "env:down": "node src/cli/env.js down",
+    "env:status": "node src/cli/env.js status",
+    "env:logs": "node src/cli/env.js logs",
+    "env:reset": "node src/cli/env.js reset",
+    "env:restart-api": "node src/cli/env.js restart-api",
+    "env:doctor": "node src/cli/env.js doctor"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

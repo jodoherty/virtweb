@@ -1,0 +1,20 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} — virtweb</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header><a class="brand" href="/">virtweb</a></header>
+<main>
+{{if .Err}}<div class="banner error">{{.Err}}</div>{{end}}
+{{if .OK}}<div class="banner ok">{{.OK}}</div>{{end}}
+{{if eq .Page "servers"}}{{template "servers" .}}
+{{else if eq .Page "server"}}{{template "server" .}}
+{{else if eq .Page "console"}}{{template "console" .}}
+{{else}}{{template "vnc" .}}{{end}}
+</main>
+</body>
+</html>{{end}}

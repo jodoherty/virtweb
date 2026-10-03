@@ -1,0 +1,129 @@
+:root {
+  --bg: #111418;
+  --panel: #1a1f26;
+  --border: #2c333d;
+  --fg: #d8dee7;
+  --muted: #7b8694;
+  --accent: #4da3ff;
+  --danger: #e05252;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+header {
+  padding: 0.6rem 1.2rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 1rem 1.2rem 3rem;
+}
+
+h2 { margin: 1rem 0 0.6rem; font-size: 1.15rem; }
+
+a { color: var(--accent); }
+
+.muted { color: var(--muted); }
+
+.banner {
+  padding: 0.5rem 0.8rem;
+  border-radius: 6px;
+  margin: 0.6rem 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.banner.error { border-color: var(--danger); }
+.banner.ok { border-color: #3f9e63; }
+.banner.warn { border-color: #c99a3c; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+th, td {
+  text-align: left;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+tr.running td { border-left: 3px solid #3f9e63; }
+
+button {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.65rem;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.danger { border-color: var(--danger); color: var(--danger); }
+
+.btn {
+  display: inline-block;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  text-decoration: none;
+}
+.btn:hover { border-color: var(--accent); }
+
+td.actions form { display: inline-block; }
+td.actions > * { margin-right: 0.3rem; }
+
+.add-server {
+  margin-top: 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+}
+.add-server h2 { margin-top: 0; }
+.add-server .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.add-server input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  min-width: 110px;
+}
+.add-server button { margin-top: 0.6rem; }
+
+/* serial console */
+.console-term {
+  height: 65vh;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem;
+}
+.console-term:focus-within { border-color: var(--accent); }
+
+/* vnc */
+.vnc-frame {
+  height: 65vh;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}

@@ -1,6 +1,7 @@
 // Command virtweb is a web-based management interface for libvirt hosts.
 //
-// It builds to a single binary with the web frontend embedded via go:embed.
+// It builds to a single binary with the web frontend and the vendored
+// terminal/VNC libraries embedded via go:embed.
 package main
 
 import (
@@ -18,17 +19,30 @@ import (
 
 	"github.com/jodoherty/virtweb/internal/api"
 	"github.com/jodoherty/virtweb/internal/sshexec"
+	"github.com/jodoherty/virtweb/internal/stub"
 	"github.com/jodoherty/virtweb/internal/store"
 	"github.com/jodoherty/virtweb/internal/virt"
 	"github.com/jodoherty/virtweb/internal/virsh"
+	"github.com/jodoherty/virtweb/internal/webui"
 )
 
-//go:embed all:web
+//go:embed web
 var webFS embed.FS
+
+// Vendored, unmodified (see third-party/*/PROVENANCE.md):
+//   xterm.js 6.0.0 + addon-fit 0.11.0 (MIT)  -> serial console
+//   noVNC 1.7.0 (MPL-2.0)                     -> VNC viewer (M6)
+//
+//go:embed third-party/xtermjs
+var xtermFS embed.FS
+//
+//go:embed third-party/novnc
+var novncFS embed.FS
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "address to listen on")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for persistent data (servers.json)")
+	backendKind := flag.String("backend", "ssh", "backend: ssh (production) or stub (offline demo/test mode)")
 	flag.Parse()
 
 	// Frontend is served straight from the embedded filesystem.
@@ -41,13 +55,39 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	apiSrv := api.New(st, &backendFactory{ssh: &sshexec.Std{}})
+
+	var factory api.BackendFactory
+	switch *backendKind {
+	case "ssh":
+		factory = &backendFactory{ssh: &sshexec.Std{}}
+	case "stub":
+		sc, err := stub.ParseScenario(os.Getenv("STUB_SCENARIO"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("using stub backend (offline demo mode; scenario %q)", string(sc))
+		factory = &stub.Factory{Scenario: sc}
+	default:
+		log.Fatalf("unknown -backend %q (want ssh or stub)", *backendKind)
+	}
+
+	apiSrv := api.New(st, factory)
+	ui, err := webui.New(st, factory, webRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	mux := http.NewServeMux()
-	apiRoutes := apiSrv.Routes()
-	mux.Handle("/api/", apiRoutes)
-	mux.Handle("/", http.FileServerFS(webRoot))
-
+	mux.Handle("/api/", apiSrv.Routes())
+	mux.Handle("/static/", webui.Static(webRoot))
+	mux.Handle("/", ui.Routes())
+	for prefix, fsys := range map[string]embed.FS{"/xtermjs/": xtermFS, "/novnc/": novncFS} {
+		sub, err := subVendored(fsys, prefix)
+		if err != nil {
+			log.Fatal(err)
+		}
+		mux.Handle(prefix, http.StripPrefix(prefix, http.FileServerFS(sub)))
+	}
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           mux,
@@ -70,6 +110,21 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// subVendored strips the third-party/<dir> prefix from an embedded
+// library tree so /xtermjs/css/xterm.css maps into the tree root.
+var vendoredDirs = map[string]string{
+	"/xtermjs/": "third-party/xtermjs",
+	"/novnc/":   "third-party/novnc",
+}
+
+func subVendored(fsys embed.FS, urlPrefix string) (fs.FS, error) {
+	rel, ok := vendoredDirs[urlPrefix]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return fs.Sub(fsys, rel)
 }
 
 // backendFactory builds virsh-over-SSH backends sharing one SSH runner.

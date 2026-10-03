@@ -1,0 +1,537 @@
+// Package stub provides a deterministic fake libvirt backend. It is
+// selected at runtime with `virtweb -backend stub` and serves two
+// purposes:
+//
+//  1. Tier 0 of the e2e suite (TESTING.md): a real virtweb binary with
+//     the real embedded UI, REST API, console sessions and store, but
+//     the backend swapped for this simulation — fast, offline, and
+//     reproducible on demand via failure scenarios.
+//  2. An offline demo / dry-run mode, so the UI can be explored before
+//     any real host is configured.
+//
+// Output strings deliberately track the shape that the real (virsh)
+// backend produces; where they diverge, the real one wins (TESTING.md
+// ground rule 1). The stub is the *only* place the intermediate
+// "starting" state exists: real libvirt reports a booting domain as
+// "running" immediately, but the stub delays the transition so UI code
+// that polls state gets to exercise the in-between.
+package stub
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jodoherty/virtweb/internal/virt"
+)
+
+// Default timing knobs.
+const (
+	defaultBootDelay = 500 * time.Millisecond // start → running
+	slowBootDelay    = 30 * time.Second       // STUB_SCENARIO=slow-boot
+	consoleDropDelay = 200 * time.Millisecond // STUB_SCENARIO=console-drop
+)
+
+// Scenario is an injectable failure mode (normally set from the
+// STUB_SCENARIO environment variable, read in main).
+type Scenario string
+
+// Failure scenarios.
+const (
+	ScenarioNone        Scenario = ""
+	ScenarioFailPing    Scenario = "fail-ping"
+	ScenarioSlowBoot    Scenario = "slow-boot"
+	ScenarioConsoleDrop Scenario = "console-drop"
+	ScenarioSSHDown     Scenario = "ssh-down"
+)
+
+// ParseScenario validates a STUB_SCENARIO value.
+func ParseScenario(s string) (Scenario, error) {
+	switch Scenario(s) {
+	case ScenarioNone, ScenarioFailPing, ScenarioSlowBoot,
+		ScenarioConsoleDrop, ScenarioSSHDown:
+		return Scenario(s), nil
+	}
+	return "", fmt.Errorf("unknown STUB_SCENARIO %q (want fail-ping, slow-boot, console-drop, or ssh-down)", s)
+}
+
+// VM state machine.
+type state int
+
+const (
+	stShutOff state = iota
+	stStarting
+	stRunning
+)
+
+func (s state) String() string {
+	switch s {
+	case stStarting:
+		return "starting"
+	case stRunning:
+		return "running"
+	default:
+		return "shut off"
+	}
+}
+
+// VMSpec describes one VM in the fake table.
+type VMSpec struct {
+	Name      string
+	VCPUs     int
+	MemoryMiB int
+	IP        string // address while running ("", if none)
+	VNCPort   int    // 0 if not VNC-enabled
+	Initial   string // "", "shut off" or "running"
+}
+
+// defaultVMs is the deterministic fake host's table.
+var defaultVMs = []VMSpec{
+	{Name: "debian-dev", VCPUs: 2, MemoryMiB: 4096, IP: "192.168.100.50"},
+	{Name: "win10", VCPUs: 4, MemoryMiB: 8192, IP: "192.168.168.51", VNCPort: 5901},
+}
+
+type vm struct {
+	spec  VMSpec
+	state state
+	timer *time.Timer // pending start → running
+}
+
+// Backend is a deterministic fake implementation of virt.Backend.
+type Backend struct {
+	srv       virt.Server
+	bootDelay time.Duration
+	scenario  Scenario
+	mu        sync.Mutex
+	vms       map[string]*vm
+	order     []string // definition order (deterministic ListVMs)
+}
+
+// Option configures a Backend.
+type Option func(*Backend)
+
+// WithBootDelay sets the delay between start and "running".
+func WithBootDelay(d time.Duration) Option {
+	return func(b *Backend) { b.bootDelay = d }
+}
+
+// WithScenario sets an injectable failure scenario.
+func WithScenario(s Scenario) Option {
+	return func(b *Backend) { b.scenario = s }
+}
+
+// WithVMs replaces the default VM table.
+func WithVMs(specs []VMSpec) Option {
+	return func(b *Backend) {
+		b.vms = map[string]*vm{}
+		b.order = nil
+		for _, spec := range specs {
+			b.addVM(spec)
+		}
+	}
+}
+
+// New creates a stub Backend for the (fake) host srv.
+func New(srv virt.Server, opts ...Option) *Backend {
+	b := &Backend{
+		srv:       srv,
+		bootDelay: defaultBootDelay,
+		vms:       map[string]*vm{},
+	}
+	for _, spec := range defaultVMs {
+		b.addVM(spec)
+	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	if b.scenario == ScenarioSlowBoot && b.bootDelay < slowBootDelay {
+		b.bootDelay = slowBootDelay
+	}
+	return b
+}
+
+// BootDelay exposes the effective start → running delay (tests).
+func (b *Backend) BootDelay() time.Duration { return b.bootDelay }
+
+// VMNames returns the VM table in definition order (tests).
+func (b *Backend) VMNames() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]string, len(b.order))
+	copy(out, b.order)
+	return out
+}
+
+func (b *Backend) addVM(spec VMSpec) {
+	st := stShutOff
+	switch spec.Initial {
+	case "running":
+		st = stRunning
+	case "shut off", "":
+		st = stShutOff
+	default:
+		panic(fmt.Sprintf("stub: bad initial state %q for %q", spec.Initial, spec.Name))
+	}
+	b.vms[spec.Name] = &vm{spec: spec, state: st}
+	b.order = append(b.order, spec.Name)
+}
+
+func (b *Backend) lookup(name string) (*vm, error) {
+	vm, ok := b.vms[name] // caller holds b.mu
+	if !ok {
+		return nil, fmt.Errorf("domain '%s' not found", name)
+	}
+	return vm, nil
+}
+
+// dialError mimics an ssh failure to the (fake) host.
+func (b *Backend) dialError() error {
+	port := b.srv.Port
+	if port == 0 {
+		port = 22
+	}
+	return fmt.Errorf("ssh: connect to %s@%s:%d: Connection refused",
+		b.srv.User, b.srv.Host, port)
+}
+
+// Ping implements virt.Backend.
+func (b *Backend) Ping(ctx context.Context) error {
+	if b.scenario == ScenarioFailPing || b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	return nil
+}
+
+// ListVMs implements virt.Backend.
+func (b *Backend) ListVMs(ctx context.Context) ([]virt.VM, error) {
+	if b.scenario == ScenarioSSHDown {
+		return nil, b.dialError()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]virt.VM, 0, len(b.order))
+	for _, name := range b.order {
+		out = append(out, b.vmToVirt(b.vms[name]))
+	}
+	return out, nil
+}
+
+// VMInfo implements virt.Backend.
+func (b *Backend) VMInfo(ctx context.Context, name string) (virt.VM, error) {
+	if b.scenario == ScenarioSSHDown {
+		return virt.VM{}, b.dialError()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	vm, err := b.lookup(name)
+	if err != nil {
+		return virt.VM{}, err
+	}
+	return b.vmToVirt(vm), nil
+}
+
+func (b *Backend) vmToVirt(vm *vm) virt.VM {
+	v := virt.VM{
+		Name:    vm.spec.Name,
+		State:   vm.state.String(),
+		Running: vm.state != stShutOff,
+		VCPUs:   vm.spec.VCPUs,
+		Memory:  vm.spec.MemoryMiB,
+		VNCPort: vm.spec.VNCPort,
+	}
+	if vm.state == stRunning {
+		v.IP = vm.spec.IP
+	}
+	return v
+}
+
+// Start implements virt.Backend. The transition to running is delayed
+// by bootDelay (the observable in-between state is "starting").
+func (b *Backend) Start(ctx context.Context, name string) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	v, err := b.lookup(name)
+	if err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	switch v.state {
+	case stRunning, stStarting:
+		b.mu.Unlock()
+		return fmt.Errorf("domain '%s' is already running", name)
+	case stShutOff:
+		v.state = stStarting
+	}
+	b.mu.Unlock()
+	b.completeBoot(v)
+	return nil
+}
+
+func (b *Backend) completeBoot(v *vm) {
+	b.mu.Lock()
+	if b.bootDelay <= 0 {
+		if v.state == stStarting {
+			v.state = stRunning
+		}
+		b.mu.Unlock()
+		return
+	}
+	if v.state == stStarting {
+		v.timer = time.AfterFunc(b.bootDelay, func() {
+			b.mu.Lock()
+			if v.state == stStarting {
+				v.state = stRunning
+			}
+			b.mu.Unlock()
+		})
+	}
+	b.mu.Unlock()
+}
+
+// Shutdown implements virt.Backend (graceful).
+func (b *Backend) Shutdown(ctx context.Context, name string) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v, err := b.lookup(name)
+	if err != nil {
+		return err
+	}
+	if v.state != stRunning {
+		return fmt.Errorf("domain '%s' is not running", name)
+	}
+	v.state = stShutOff
+	return nil
+}
+
+// Destroy implements virt.Backend (force). Cancels a pending boot.
+func (b *Backend) Destroy(ctx context.Context, name string) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v, err := b.lookup(name)
+	if err != nil {
+		return err
+	}
+	switch v.state {
+	case stRunning:
+		v.state = stShutOff
+	case stStarting:
+		v.state = stShutOff
+		if v.timer != nil {
+			v.timer.Stop()
+		}
+	case stShutOff:
+		return fmt.Errorf("domain '%s' is not running", name)
+	}
+	return nil
+}
+
+// Reboot implements virt.Backend. The VM goes through "starting" again.
+func (b *Backend) Reboot(ctx context.Context, name string) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	v, err := b.lookup(name)
+	if err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	if v.state != stRunning {
+		b.mu.Unlock()
+		return fmt.Errorf("domain '%s' is not running", name)
+	}
+	v.state = stStarting
+	b.mu.Unlock()
+	b.completeBoot(v)
+	return nil
+}
+
+// Console implements virt.Backend with a byte-deterministic fake shell:
+// banner + motd, then a getty-style prompt that echoes input and
+// answers a handful of canned commands. The caller must close in when
+// it is done (the API layer does this via the session pipes).
+func (b *Backend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	v, err := b.lookup(name)
+	if err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	if v.state != stRunning {
+		b.mu.Unlock()
+		return fmt.Errorf("domain '%s' is not running", name)
+	}
+	b.mu.Unlock()
+
+	p := profileFor(v.spec)
+	_, _ = io.WriteString(out, p.banner)
+	_, _ = io.WriteString(out, p.motd)
+
+	if b.scenario == ScenarioConsoleDrop {
+		// Stream goes away shortly after the banner: the UI's
+		// "stream ended / reconnect" path.
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(consoleDropDelay):
+			return nil
+		}
+	}
+	_, _ = io.WriteString(out, p.prompt)
+	return b.shell(ctx, v, p, in, out)
+}
+
+// shellProfile holds the per-VM terminal strings.
+type shellProfile struct {
+	prompt     string
+	banner     string
+	motd       string
+	lineEnding string
+	unameReply string
+	notFound   func(cmd string) string
+}
+
+func profileFor(spec VMSpec) shellProfile {
+	if strings.HasPrefix(spec.Name, "win") {
+		return shellProfile{
+			prompt:     "C:\\>",
+			banner:     "Microsoft Windows [Version 10.0.19045.3636]\r\n(c) Microsoft Corporation. All rights reserved.\r\n",
+			lineEnding: "\r\n",
+			unameReply: "Microsoft Windows [Version 10.0.19045.3636]",
+			notFound: func(cmd string) string {
+				return cmd + " is not recognized as an internal or external command,\r\noperable program or batch file."
+			},
+		}
+	}
+	return shellProfile{
+		prompt:     spec.Name + ":~# ",
+		banner:     "Linux " + spec.Name + " 6.12.0-stub #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux\n",
+		motd:       "Welcome to the virtweb stub console (offline demo).\n",
+		lineEnding: "\n",
+		unameReply: "Linux " + spec.Name + " 6.12.0-stub #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux",
+		notFound: func(cmd string) string {
+			return "bash: " + cmd + ": command not found"
+		},
+	}
+}
+
+// shell echoes input like a cooked getty line by line and answers
+// canned commands. It returns when in reaches EOF or ctx is cancelled.
+func (b *Backend) shell(ctx context.Context, vm *vm, p shellProfile, in io.Reader, out io.Writer) error {
+	one := make([]byte, 1)
+	type inByte struct {
+		b   byte
+		err error
+	}
+	inCh := make(chan inByte)
+	go func() {
+		for {
+			_, err := in.Read(one)
+			if err != nil {
+				inCh <- inByte{err: err}
+				return
+			}
+			inCh <- inByte{b: one[0]}
+		}
+	}()
+	var line []byte
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ib := <-inCh:
+			if ib.err != nil {
+				return nil // peer closed (client disconnected)
+			}
+			switch ib.b {
+			case '\n', '\r':
+				_, _ = io.WriteString(out, p.lineEnding) // echo the line ending
+				cmd := strings.TrimSpace(string(line))
+				line = line[:0]
+				if reply := b.reply(vm, p, cmd); reply != "" {
+					_, _ = io.WriteString(out, reply)
+				}
+				if cmd == "exit" || cmd == "logout" {
+					return nil
+				}
+				_, _ = io.WriteString(out, p.prompt)
+			default:
+				_, _ = out.Write([]byte{ib.b}) // echo like a real getty
+				line = append(line, ib.b)
+			}
+		}
+	}
+}
+
+// reply is the canned command table.
+func (b *Backend) reply(vm *vm, p shellProfile, cmd string) string {
+	switch cmd {
+	case "":
+		return ""
+	case "uname -a":
+		return p.unameReply + p.lineEnding
+	case "hostname":
+		return vm.spec.Name + p.lineEnding
+	case "exit", "logout":
+		return ""
+	default:
+		return p.notFound(cmd) + p.lineEnding
+	}
+}
+
+// Factory implements the api.BackendFactory interface for the stub
+// backend.
+//
+// A Factory returns the same Backend instance for a given server ID, so
+// every consumer (the REST API and the web UI each cache their own
+// backend per server) observes the same fake host state. Without this,
+// a "start" via /api would update one in-memory stub while the console
+// page read a different one.
+type Factory struct {
+	Scenario  Scenario
+	VMs       []VMSpec      // optional table override
+	BootDelay time.Duration // optional delay override
+
+	mu       sync.Mutex
+	byServer map[string]virt.Backend
+}
+
+// NewBackend implements api.BackendFactory.
+func (f *Factory) NewBackend(srv virt.Server) virt.Backend {
+	f.mu.Lock()
+	if b, ok := f.byServer[srv.ID]; ok {
+		f.mu.Unlock()
+		return b
+	}
+	var opts []Option
+	if f.Scenario != ScenarioNone {
+		opts = append(opts, WithScenario(f.Scenario))
+	}
+	if len(f.VMs) > 0 {
+		opts = append(opts, WithVMs(f.VMs))
+	}
+	if f.BootDelay > 0 {
+		opts = append(opts, WithBootDelay(f.BootDelay))
+	}
+	b := New(srv, opts...)
+	if f.byServer == nil {
+		f.byServer = map[string]virt.Backend{}
+	}
+	f.byServer[srv.ID] = b
+	f.mu.Unlock()
+	return b
+}

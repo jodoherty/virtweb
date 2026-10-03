@@ -1,0 +1,16 @@
+{{define "console"}}
+<p><a href="/servers/{{.Server.ID}}">←</a> Console — <strong>{{.VM.Name}}</strong>
+  <span class="muted">({{.VM.State}})</span></p>
+{{if not .Running}}
+<div class="banner warn">This VM is {{.VM.State}}.
+  <a href="/servers/{{.Server.ID}}">Start it</a> to attach to the serial console.</div>
+{{else}}
+<p id="console-status" class="muted">Connecting…</p>
+<div id="term" class="console-term"></div>
+<link rel="stylesheet" href="/xtermjs/css/xterm.css">
+<script src="/xtermjs/lib/xterm.js"></script>
+<script src="/xtermjs/addon-fit/lib/addon-fit.js"></script>
+{{end}}
+<script type="application/json" id="console-cfg">{{.CfgJSON}}</script>
+<script type="module" src="/static/console.js"></script>
+{{end}}
