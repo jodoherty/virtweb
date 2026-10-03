@@ -28,23 +28,32 @@
 //   through the request context. A failed uplink POST or downlink
 //   failure terminates the whole channel.
 //
-// Wire protocol (v1; mirrored server-side in internal/api/frame.go and
-// in the e2e harness in e2e/src/frames.js): every direction speaks
+// Wire protocol (mirrored server-side in internal/api/frame.go and in
+// the e2e harness in e2e/src/frames.js): every direction speaks
 // length-framed, tagged frames — [tag:1][len:4 big-endian][payload].
 // Tags: HELLO (0x01, downlink, first frame, [version][flags] payload),
 // DATA (0x02, the session's raw bytes), KEEPALIVE (0x03, empty, idle
-// liveness). Each uplink POST body is exactly one frame. The framing
-// exists so (a) idle streams can't trip a reverse proxy's read/idle
-// timeouts — each direction emits KEEPALIVEs while silent — and (b) a
+// liveness), and — protocol v2, announced by the HELLO flags bit
+// HELLO_FLAG_TERMINAL — SESSION_END (0x04, clean end, empty payload)
+// and SESSION_ERROR (0x05, failed end, UTF-8 message payload). Each
+// uplink POST body is exactly one frame (DATA/KEEPALIVE only: the
+// client's terminal state is its stream abort). The framing exists so
+// (a) idle streams can't trip a reverse proxy's read/idle timeouts —
+// each direction emits KEEPALIVEs while silent — and (b) a
 // corrupted/truncated stream is detectable instead of silently
 // desyncing the guest protocol. Consumers of this channel (xterm,
-// noVNC, the SPICE fork) only ever see DATA payloads.
+// noVNC, the SPICE fork) only ever see DATA payloads; the terminal
+// frames surface through closeReason + terminalMessage.
 
 const FRAME = {
   hello: 0x01,
   data: 0x02,
   keepalive: 0x03,
+  sessionEnd: 0x04,
+  sessionError: 0x05,
 };
+// HELLO flags: bit 0 announces the downlink terminal frames (v2).
+const HELLO_FLAG_TERMINAL = 0x01;
 const PROTO_VERSION = 1;
 const MAX_FRAME_PAYLOAD = 16 * 1024 * 1024; // parser bound, not a perf knob
 
@@ -61,13 +70,19 @@ export function encodeFrame(tag, payload) {
 }
 
 // FrameDecoder reassembles frames from raw stream chunks and reports
-// their DATA payloads (HELLO is validated once, KEEPALIVEs dropped).
+// their DATA payloads (HELLO is validated once, KEEPALIVEs dropped,
+// terminal frames reported to the optional onTerminal observer).
 // It throws on a torn/oversized/unknown frame — the caller fails the
 // channel, which surfaces as "connection lost" to the UI.
 class FrameDecoder {
-  constructor() {
+  /**
+   * @param {(t: {kind: 'end'|'error', message: string}) => void} [onTerminal]
+   */
+  constructor(onTerminal) {
     this.pending = null; // Uint8Array: not-yet-framed trailing bytes
     this.helloSeen = false;
+    this.flags = 0; // HELLO capability bits
+    this.onTerminal = onTerminal;
   }
   feed(chunk) {
     const old = this.pending;
@@ -97,6 +112,7 @@ class FrameDecoder {
               `unsupported protocol version ${payload.length ? payload[0] : '(none)'}`,
             );
           }
+          this.flags = payload[1];
           this.helloSeen = true;
           break;
         case FRAME.data:
@@ -104,6 +120,18 @@ class FrameDecoder {
           break;
         case FRAME.keepalive:
           break; // idle liveness; nothing to deliver
+        case FRAME.sessionEnd:
+        case FRAME.sessionError:
+          // Protocol v2 terminal frames: only valid when announced by
+          // the HELLO flags bit; anything else is a protocol violation.
+          if (!(this.flags & HELLO_FLAG_TERMINAL)) {
+            throw new Error('terminal frame before it was announced');
+          }
+          this.onTerminal?.({
+            kind: tag === FRAME.sessionEnd ? 'end' : 'error',
+            message: new TextDecoder().decode(payload),
+          });
+          break;
         default:
           throw new Error('unknown frame tag 0x' + tag.toString(16));
       }
@@ -140,6 +168,7 @@ export class DuplexChannel {
     this._opened = false;
     this._closed = false; // terminal: no more sends or reads
     this._reason = ''; // terminal closeReason: '' | 'ended' | 'error' | 'closed'
+    this._terminal = null; // wire-protocol v2 terminal frame {kind, message}
     this._sid = null; // server-assigned session id (X-Tunnel-Id), if any
     this._openP = null;
     this._openTimer = null;
@@ -179,9 +208,21 @@ export class DuplexChannel {
 
   // '' while open; 'ended' (clean server EOF), 'error' (the channel
   // failed) or 'closed' (the client closed it) once terminal. The UI
-  // uses this to tell "session ended" from "connection lost".
+  // uses this to tell "session ended" from "connection lost". A
+  // terminal frame (wire protocol v2) refines it: a SESSION_ERROR
+  // frame means 'error' even though the stream itself ended cleanly,
+  // and its message is exposed as terminalMessage.
   get closeReason() {
     return this._reason;
+  }
+
+  /**
+   * The server's terminal message (wire protocol v2): what the
+   * SESSION_ERROR frame carried, or '' for clean ends / stream-level
+   * failures that produced no terminal frame.
+   */
+  get terminalMessage() {
+    return this._terminal?.message ?? '';
   }
 
   /**
@@ -249,7 +290,9 @@ export class DuplexChannel {
   _pumpDownlink(body) {
     const reader = body.getReader();
     this._reader = reader;
-    const frames = new FrameDecoder();
+    const frames = new FrameDecoder((term) => {
+      this._terminal = term;
+    });
     (async () => {
       try {
         for (;;) {
@@ -260,7 +303,11 @@ export class DuplexChannel {
           }
         }
         if (!this._closed) {
-          this._reason = 'ended';
+          // A terminal frame (protocol v2) refines the bare stream EOF:
+          // SESSION_ERROR means the session failed server-side.
+          this._reason = this._terminal
+            ? (this._terminal.kind === 'end' ? 'ended' : 'error')
+            : 'ended';
           this._sink.close();
         }
       } catch (err) {

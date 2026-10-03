@@ -32,7 +32,13 @@ export class ConsoleSession {
 
     const reader = this.res.body.getReader();
     this._reader = reader;
-    this.frames = new FrameDecoder();
+    // The downlink speaks the wire protocol: reassemble frames,
+    // consume the DATA payloads; surface terminal frames (v2) on
+    // this.terminal.
+    this.terminal = null;
+    this.frames = new FrameDecoder(undefined, (term) => {
+      this.terminal = term;
+    });
     this._record = (label, bytes) => {
       if (!logPath) return;
       mkdirSync(path.dirname(logPath), { recursive: true });
@@ -45,8 +51,8 @@ export class ConsoleSession {
         const { value, done } = await reader.read();
         if (done) break;
         this._record('<<', value);
-        // The downlink speaks wire protocol v1: reassemble frames and
-        // consume the DATA payloads (KEEPALIVEs dropped, HELLO checked).
+        // Reassemble frames and consume the DATA payloads
+        // (KEEPALIVEs dropped, HELLO checked, terminals surfaced).
         for (const payload of this.frames.feed(value)) {
           this.text += this.output.decode(payload, { stream: true });
           onChunk?.(payload);
@@ -105,9 +111,12 @@ export async function openConsole(opts) {
 // a clean state in the shared persistent env.
 export async function waitForNoSession(baseUrl, serverId, vm, { timeout = 10000, interval = 100 } = {}) {
   const inputUrl = `${baseUrl}/api/servers/${serverId}/vms/${encodeURIComponent(vm)}/console/input`;
+  // Probe with a protocol-correct KEEPALIVE frame: 204 while the
+  // session is live, 404 once the server has dropped it.
+  const probe = encodeFrame(TAG.keepalive, new Uint8Array(0));
   const deadline = Date.now() + timeout;
   for (;;) {
-    const res = await fetch(inputUrl, { method: 'POST', body: 'x\r' });
+    const res = await fetch(inputUrl, { method: 'POST', body: probe });
     await res.body?.cancel().catch(() => {});
     if (res.status === 404) return;
     if (Date.now() > deadline) throw new Error(`console session for ${vm} did not close within ${timeout}ms`);

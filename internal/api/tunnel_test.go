@@ -2,11 +2,14 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 // openTunnelStream opens a tunnel stream and returns the response plus
@@ -87,6 +90,67 @@ func TestTunnelStreamRoundTrip(t *testing.T) {
 	want := "stub-tunnel: vm1 127.0.0.1:5991\nchunk 1\nchunk 2\nhello"
 	if frames[0].tag != frameHello || got.String() != want {
 		t.Fatalf("streamed = HELLO:%v payload %q, want %q", frames[0], got.String(), want)
+	}
+}
+
+// TestTunnelStreamTerminalError: a tunnel that fails server-side
+// (ssh refused, target gone) ends with a SESSION_ERROR frame carrying
+// the server's message; a tunnel whose remote end hangs up ends with
+// SESSION_END. The client gets the WHY, not just a dead stream.
+func TestTunnelStreamTerminalError(t *testing.T) {
+	ts, ff, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	client := &http.Client{}
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=vnc", id)
+
+	// Pre-seed the factory (the backend is materialized lazily on
+	// first use).
+	ff.byID[id] = &fakeBackend{
+		vms:       []virt.VM{{Name: "vm1", State: "running", Running: true}},
+		tunnelErr: errors.New("ssh: connect to host h port 5900: connection refused"),
+	}
+	res, _ := openTunnelStream(t, client, streamURL)
+	buf, rerr := io.ReadAll(res.Body)
+	if rerr != nil {
+		t.Fatalf("read stream: %v", rerr)
+	}
+	frames, rest, ferr := framesFrom(buf)
+	if ferr != nil || len(rest) != 0 {
+		t.Fatalf("frames = %+v rest=%d err=%v", frames, len(rest), ferr)
+	}
+	if len(frames) != 2 || frames[0].tag != frameHello {
+		t.Fatalf("frames = %+v, want HELLO + terminal", frames)
+	}
+	if frames[1].tag != frameError ||
+		string(frames[1].payload) != "ssh: connect to host h port 5900: connection refused" {
+		t.Fatalf("terminal frame = %+v, want SESSION_ERROR with the message", frames[1])
+	}
+}
+
+func TestTunnelStreamTerminalCleanEnd(t *testing.T) {
+	ts, ff, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	client := &http.Client{}
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=vnc", id)
+
+	ff.byID[id] = &fakeBackend{
+		vms:         []virt.VM{{Name: "vm1", State: "running", Running: true}},
+		tunnelClean: true,
+	}
+	res, _ := openTunnelStream(t, client, streamURL)
+	buf, rerr := io.ReadAll(res.Body)
+	if rerr != nil {
+		t.Fatalf("read stream: %v", rerr)
+	}
+	frames, rest, ferr := framesFrom(buf)
+	if ferr != nil || len(rest) != 0 || len(frames) != 3 {
+		t.Fatalf("frames = %+v rest=%d err=%v, want HELLO + DATA + SESSION_END", frames, len(rest), ferr)
+	}
+	if frames[1].tag != frameData || string(frames[1].payload) != "stub-tunnel: vm1\n" {
+		t.Fatalf("data frame = %+v", frames[1])
+	}
+	if frames[2].tag != frameEnd || len(frames[2].payload) != 0 {
+		t.Fatalf("terminal frame = %+v, want SESSION_END (empty)", frames[2])
 	}
 }
 

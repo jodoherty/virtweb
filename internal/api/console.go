@@ -109,8 +109,9 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	// uncompressed (h2 or not); see AGENTS.md.
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	// Announce the wire protocol (v1) before any console bytes; the
-	// client fails fast on a non-matching stream (see frame.go).
+	// Announce the wire protocol before any console bytes; the client
+	// fails fast on a non-matching stream (see frame.go). The HELLO
+	// flags byte advertises the terminal frames (protocol v2).
 	if err := writeHello(w, flusher); err != nil {
 		log.Printf("console %s: hello: %v", name, err)
 		return
@@ -118,9 +119,21 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 
 	// Run the console session; when it ends (VM hung up, session error,
 	// or the client disconnected and r.Context() cancelled it), close the
-	// pipes so the pump below terminates.
+	// pipes so the pump below terminates. If the client is still here,
+	// first tell the pump to emit the terminal frame (protocol v2):
+	// SESSION_END for a clean end, SESSION_ERROR with the server's
+	// message otherwise.
+	termCh := make(chan terminalEvent, 1)
 	go func() {
 		err := b.Console(r.Context(), name, s.inRead, s.outWrite)
+		if r.Context().Err() == nil {
+			ev := terminalEvent{tag: frameEnd}
+			if err != nil {
+				ev.tag = frameError
+				ev.message = truncateTerminalMessage(err.Error())
+			}
+			termCh <- ev
+		}
 		s.close()
 		if err != nil {
 			log.Printf("console %s: %v", name, err)
@@ -128,10 +141,10 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	pumpDone := make(chan struct{})
-	go pumpFramed(s.outRead, w, a.keepalive, pumpDone)
+	go pumpFramed(s.outRead, w, a.keepalive, termCh, pumpDone)
 	select {
 	case <-r.Context().Done(): // client disconnected
-	case <-pumpDone:          // console output ended
+	case <-pumpDone: // console output ended
 	}
 	s.close()
 	// The pump goroutine may still be inside Write/Flush; the response
@@ -174,6 +187,23 @@ func (a *API) handleConsoleInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleConsoleStatus reports whether a console session is currently
+// open for this (server, VM) — the "console in use" indicator. One
+// session per (server, VM): open means a session exists in another
+// tab or window. 200 {"open":true|false}; unknown server -> 404.
+func (a *API) handleConsoleStatus(w http.ResponseWriter, r *http.Request) {
+	id, name := r.PathValue("id"), r.PathValue("name")
+	if _, _, err := a.backend(id); err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	a.conMu.Lock()
+	s := a.consoles[id+"/"+name]
+	open := s != nil && !s.dead
+	a.conMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]bool{"open": open})
 }
 
 // dropConsole removes a finished session from the registry so the key

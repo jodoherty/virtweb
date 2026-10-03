@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { requireEnv } from '../src/envinfo.js';
 import { Api, ApiError } from '../src/api.js';
 import { openConsole, ConsoleSession, waitForNoSession } from '../src/console.js';
-import { FrameDecoder } from '../src/frames.js';
+import { FrameDecoder, HELLO_FLAG_TERMINAL } from '../src/frames.js';
 import { waitFor } from '../src/wait.js';
 import { startStub } from '../src/stubInstance.js';
 
@@ -124,6 +124,47 @@ test('idle stream emits KEEPALIVE frames while quiet', async () => {
     // and keepalives start.
     expect(sawData).toBe(true);
     expect(sawKeepalive).toBe(true);
+  } finally {
+    await inst.close();
+  }
+});
+
+test('clean session end emits a SESSION_END frame as the last frame', async () => {
+  // Wire protocol v2: the terminal state is in-band — a SESSION_END
+  // frame (announced by the HELLO flags bit) precedes the stream EOF,
+  // so the client reports WHY the session ended.
+  const inst = await startStub({ scenario: 'console-drop' });
+  try {
+    const api2 = new Api(inst.url);
+    await api2.action(inst.serverId, 'debian-dev', 'start');
+    await waitFor(async () => {
+      const vms = await api2.listVMs(inst.serverId);
+      return vms.find((v) => v.name === 'debian-dev')?.state === 'running';
+    }, { message: 'debian-dev running', timeout: 5000 });
+
+    const s = await openConsole({ baseUrl: inst.url, serverId: inst.serverId, vm: 'debian-dev' });
+    expect(s.status).toBe(200);
+    expect(s.frames.flags & HELLO_FLAG_TERMINAL).toBeTruthy(); // v2 announced
+    await s.closed(5000);
+    expect(s.terminal).toMatchObject({ kind: 'end' });
+    expect(s.text).toContain('Linux debian-dev'); // DATA arrived before the end
+  } finally {
+    await inst.close();
+  }
+});
+
+test('failed session ends with a SESSION_ERROR frame carrying the server message', async () => {
+  // The ssh to the remote host fails: the client still gets a clean
+  // stream EOF — but with the SESSION_ERROR frame telling it why.
+  const inst = await startStub({ scenario: 'ssh-down' });
+  try {
+    const s = await openConsole({ baseUrl: inst.url, serverId: inst.serverId, vm: 'debian-dev' });
+    expect(s.status).toBe(200);
+    expect(s.frames.flags & HELLO_FLAG_TERMINAL).toBeTruthy(); // v2 announced
+    await s.closed(5000);
+    expect(s.terminal?.kind).toBe('error');
+    expect(s.terminal!.message.length).toBeGreaterThan(0);
+    expect(s.text).toBe(''); // no DATA: the session died before output
   } finally {
     await inst.close();
   }

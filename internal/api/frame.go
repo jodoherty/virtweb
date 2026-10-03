@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Transport wire protocol v1 — length-framed, tagged frames carried on
+// Transport wire protocol — length-framed, tagged frames carried on
 // the plain-HTTP streams (console output/input, tunnel stream/input).
 //
 //   frame := [tag:1][len:4 big-endian][payload]
@@ -28,35 +28,76 @@ import (
 //     stream desyncs a VNC/SPICE session silently; a torn frame fails
 //     the channel cleanly instead.
 //
+// Protocol v2 (announced by the HELLO flags byte, bit
+// helloTerminalFrames) adds in-band terminal frames: the session's final state
+// arrives as a frame (SESSION_END, clean, or SESSION_ERROR with the
+// server's message) before the stream ends, so the client reports
+// WHY a session died instead of guessing from how the stream did. The
+// frame shape and version are unchanged — v2 is a capability, not a
+// new version. (Future v3 candidates: in-band client-side terminal
+// frames, negotiated the same way.)
+//
 // The browser side parses the same frames in web/static/duplex.js
 // (FrameDecoder); consumers (xterm, noVNC, the SPICE fork) only ever
 // see DATA payloads. The e2e harness mirrors the parser in
 // e2e/src/frames.js.
-//
-// Terminal state is conveyed by the stream itself in v1: a clean
-// server-side EOF means "session ended", an aborted connection means
-// "connection lost". (In-band terminal frames are the planned v2
-// extension, announced via the HELLO flags byte.)
 
 const (
 	frameHello     byte = 0x01
 	frameData      byte = 0x02
 	frameKeepalive byte = 0x03
 
-	// frameVersion is what the HELLO frame advertises; the client
-	// refuses a stream whose first frame is not a matching HELLO.
-	frameVersion byte = 1
-
-	// helloFlags is the current capability word (0: no extensions).
-	helloFlags byte = 0
-
-	// maxFramePayload bounds one frame's payload in the downlink
-	// parser (16 MiB is far beyond any real chunk; it bounds the
-	// reassembly allocation, it is not a performance knob). Uplink
-	// payloads are bounded per endpoint (maxInputBody /
-	// maxTunnelInputBody).
-	maxFramePayload = 16 << 20
+	// Wire protocol v2 (announced by the HELLO flags byte, see
+	// helloTerminalFrames): in-band terminal frames. The session's
+	// final state arrives as a frame before the stream ends, so the
+	// client can distinguish "ended cleanly" from "failed" and see the
+	// server's reason instead of guessing from how the stream died.
+	// Both are downlink-only: the client's terminal state is simply
+	// its stream abort, which the server already sees.
+	frameEnd   byte = 0x04 // clean end; payload: optional note
+	frameError byte = 0x05 // failed end; payload: error message
 )
+
+// The frame version stays at 1: the frame shape (tag + len + payload)
+// is unchanged — v2 is carried by the HELLO flags capability bits,
+// not by bumping the version. The version would increment for a
+// change to the frame shape or the meaning of HELLO/DATA.
+const frameVersion byte = 1
+
+// helloTerminalFrames is the HELLO flags bit announcing that the
+// downlink may end with a frameEnd/frameError terminal frame.
+const helloTerminalFrames byte = 0x01
+
+// helloFlags is the server's current capability word.
+const helloFlags = helloTerminalFrames
+
+// maxTerminalMessage bounds the terminal frame's message payload
+// (ssh/virsh errors can be long; the UI shows it verbatim).
+const maxTerminalMessage = 512
+
+// terminalEvent is the session's terminal state, delivered to the
+// pump so it can emit the terminal frame as the LAST frame of the
+// stream (any pipe data the backend wrote before the end is flushed
+// as DATA first, since the session is over).
+type terminalEvent struct {
+	tag     byte // frameEnd or frameError
+	message string
+}
+
+// truncateTerminalMessage bounds a terminal frame's message.
+func truncateTerminalMessage(s string) string {
+	if len(s) <= maxTerminalMessage {
+		return s
+	}
+	return s[:maxTerminalMessage] + "…"
+}
+
+// maxFramePayload bounds one frame's payload in the downlink
+// parser (16 MiB is far beyond any real chunk; it bounds the
+// reassembly allocation, it is not a performance knob). Uplink
+// payloads are bounded per endpoint (maxInputBody /
+// maxTunnelInputBody).
+const maxFramePayload = 16 << 20
 
 // defaultKeepalive is how long a stream may sit idle before a
 // KEEPALIVE frame goes out (the -keepalive flag sets it per server;
@@ -94,10 +135,15 @@ func writeHello(w io.Writer, f http.Flusher) error {
 
 // pumpFramed frames the bytes of r as DATA frames into w (flushing
 // each), emitting KEEPALIVE frames while the stream has been idle for
-// keepalive (keepalive <= 0 disables keepalives). It returns when r is
-// exhausted or a write fails; done is closed on return, only once all
-// writes have completed (the caller may then finish the response).
-func pumpFramed(r io.Reader, w http.ResponseWriter, keepalive time.Duration, done chan struct{}) {
+// keepalive (keepalive <= 0 disables keepalives). The session's
+// terminal state arrives on termCh (buffered, may be nil): the pump
+// flushes any pending pipe output as DATA, emits the terminal frame
+// as the LAST frame, and ends the stream. It returns when r is exhausted
+// (delivering a queued terminal event as the last frame, if any),
+// when the terminal event is delivered, or when a write fails; done
+// is closed on return, only once all writes have completed (the
+// caller may then finish the response).
+func pumpFramed(r io.Reader, w http.ResponseWriter, keepalive time.Duration, termCh <-chan terminalEvent, done chan struct{}) {
 	defer close(done)
 	flusher, _ := w.(http.Flusher)
 
@@ -153,6 +199,18 @@ func pumpFramed(r io.Reader, w http.ResponseWriter, keepalive time.Duration, don
 				last = time.Now()
 			}
 			if res.err != nil {
+				// Stream exhausted. If the terminal event is already
+				// queued (the handler sends it just before closing the
+				// pipe), emit it as the last frame; otherwise exit
+				// silently (client went away: no terminal state to
+				// report).
+				select {
+				case ev := <-termCh:
+					if err := writeFrame(w, flusher, ev.tag, []byte(ev.message)); err != nil {
+						return
+					}
+				default:
+				}
 				return
 			}
 		case <-tickC:
@@ -161,6 +219,27 @@ func pumpFramed(r io.Reader, w http.ResponseWriter, keepalive time.Duration, don
 					return
 				}
 				last = time.Now()
+			}
+		case ev := <-termCh:
+			// Session over: flush whatever output is still in flight
+			// as DATA (the client is entitled to what the backend
+			// wrote before the end), then emit the terminal frame as
+			// the LAST frame and end the stream.
+			for {
+				select {
+				case res := <-rc:
+					if res.data != nil {
+						if err := writeFrame(w, flusher, frameData, res.data); err != nil {
+							return
+						}
+					}
+					if res.err != nil {
+						if err := writeFrame(w, flusher, ev.tag, []byte(ev.message)); err != nil {
+							return
+						}
+						return
+					}
+				}
 			}
 		}
 	}

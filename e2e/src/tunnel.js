@@ -41,7 +41,11 @@ export class TunnelSession {
 
     const reader = this.res.body.getReader();
     this._reader = reader;
-    this.frames = new FrameDecoder();
+    // Surface terminal frames (v2) on this.terminal.
+    this.terminal = null;
+    this.frames = new FrameDecoder(undefined, (term) => {
+      this.terminal = term;
+    });
     this._record = (label, bytes) => {
       if (!logPath) return;
       mkdirSync(path.dirname(logPath), { recursive: true });
@@ -60,9 +64,10 @@ export class TunnelSession {
         const { value, done } = await reader.read();
         if (done) break;
         this._record('<<', value);
-        // The downlink speaks wire protocol v1: each DATA frame is one
-        // unit of incremental arrival (KEEPALIVEs dropped, HELLO
-        // checked), so chunkCount counts DATA frames.
+        // The downlink speaks the wire protocol: each DATA frame is
+        // one unit of incremental arrival (KEEPALIVEs dropped, HELLO
+        // checked, terminals surfaced), so chunkCount counts DATA
+        // frames.
         for (const payload of this.frames.feed(value)) {
           this.chunkCount++;
           this.text += this.output.decode(payload, { stream: true });

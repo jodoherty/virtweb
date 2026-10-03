@@ -190,6 +190,31 @@ test('scenario tunnel-drop: stream dies after the banner', async () => {
     expect(s.status).toBe(200);
     const text = await s.closed(5000);
     expect(text).toContain('stub-tunnel: debian-dev');
+    // Wire protocol v2: the clean remote hang-up is a SESSION_END frame.
+    expect(s.terminal).toMatchObject({ kind: 'end' });
+  } finally {
+    await inst.close();
+  }
+});
+
+test('scenario tunnel-fail: stream ends with SESSION_ERROR and the message', async () => {
+  // The tunnel dies shortly after the banner with an error: the
+  // client gets the reason in-band (SESSION_ERROR) instead of guessing
+  // from a dead stream.
+  const inst = await startStub({ scenario: 'tunnel-fail' });
+  try {
+    const api2 = new Api(inst.url);
+    await api2.action(inst.serverId, 'debian-dev', 'start');
+    await waitFor(async () => {
+      const vms = await api2.listVMs(inst.serverId);
+      return vms.find((v) => v.name === 'debian-dev')?.state === 'running';
+    });
+    const s = await openTunnel({ baseUrl: inst.url, serverId: inst.serverId, vm: 'debian-dev', display: 'spice' });
+    expect(s.status).toBe(200);
+    const text = await s.closed(5000);
+    expect(text).toContain('stub-tunnel: debian-dev'); // banner before the failure
+    expect(s.terminal?.kind).toBe('error');
+    expect(s.terminal!.message).toContain('tunnel-fail');
   } finally {
     await inst.close();
   }
@@ -269,6 +294,48 @@ test('console page: clean session end shows Reconnect', async ({ page }) => {
       timeout: 15_000,
     });
     await expect(page.locator('#console-reconnect')).toBeVisible();
+  } finally {
+    await page.close();
+    await inst.close();
+  }
+});
+
+test('console page: failed session is retried automatically (bounded)', async ({ page }) => {
+  // Wire protocol v2 + retry.js: the SESSION_ERROR frame drives the
+  // status (with the server's message), then the page reloads itself
+  // after a short delay. The retry count lives in sessionStorage, so
+  // it survives the reload and a dead server stops the loop after a
+  // bounded number of attempts. (console-fail: everything works
+  // except the console attach itself.)
+  const inst = await startStub({ scenario: 'console-fail' });
+  try {
+    const api2 = new Api(inst.url);
+    await api2.action(inst.serverId, 'debian-dev', 'start');
+    await waitFor(async () => {
+      const vms = await api2.listVMs(inst.serverId);
+      return vms.find((v) => v.name === 'debian-dev')?.state === 'running';
+    });
+    await page.goto(`${inst.url}/servers/${inst.serverId}/vms/debian-dev/console`);
+    // The terminal error frame is surfaced in the status.
+    await expect(page.locator('#console-status')).toContainText(/Connection lost/, {
+      timeout: 15_000,
+    });
+    // ...and the page retries itself shortly after.
+    const navigated = page
+      .waitForEvent('framenavigated')
+      .catch(() => null);
+    const status = await page.locator('#console-status').textContent();
+    expect(status).toContain('retrying shortly');
+    const frame = await Promise.race([
+      navigated,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('no auto-retry reload within 10s')), 10_000)),
+    ]);
+    expect(frame).not.toBeNull();
+    // The attempt counter survived the reload (sessionStorage).
+    const count = await page.evaluate(() => {
+      return sessionStorage.getItem('vw-retry:' + location.pathname + location.search);
+    });
+    expect(count).toBe('1');
   } finally {
     await page.close();
     await inst.close();

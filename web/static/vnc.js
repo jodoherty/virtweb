@@ -11,6 +11,7 @@
 // constructor takes the channel directly.
 import RFB from '/novnc/core/rfb.js';
 import { DuplexChannel } from '/static/duplex.js';
+import { scheduleRetry, clearRetries } from '/static/retry.js';
 
 class ChannelSocket {
   constructor(ch) {
@@ -35,7 +36,17 @@ class ChannelSocket {
         this.onopen?.();
       }
     }).catch((e) => this._close(e));
-    ch.closed.then(() => this._close(null));
+    ch.closed.then(() => {
+      // The channel's terminal state says why: 'error' covers both a
+      // wire-protocol-v2 SESSION_ERROR frame (the tunnel failed
+      // server-side; its message explains) and a bare transport
+      // failure. Anything else is a clean end (code 1000).
+      if (ch.closeReason === 'error') {
+        this._close(new Error(ch.terminalMessage || 'connection lost'));
+      } else {
+        this._close(null);
+      }
+    });
 
     // Downlink: ReadableStream chunks -> message events.
     (async () => {
@@ -97,11 +108,25 @@ class ChannelSocket {
 const cfg = JSON.parse(document.getElementById('vnc-cfg').textContent);
 const statusEl = document.getElementById('vnc-status');
 const reconnectBtn = document.getElementById('vnc-reconnect');
-if (reconnectBtn) reconnectBtn.addEventListener('click', () => location.reload());
+if (reconnectBtn)
+  reconnectBtn.addEventListener('click', () => {
+    clearRetries();
+    location.reload();
+  });
 function vncStatus(msg, { failed = false, reconnect = false } = {}) {
   statusEl.textContent = msg;
   statusEl.classList.toggle('status-err', failed);
   if (reconnectBtn) reconnectBtn.hidden = !reconnect;
+}
+
+// A failed or dropped session is retried automatically (a bounded
+// number of page reloads — see retry.js).
+function vncRetryOrReconnect(base) {
+  if (scheduleRetry()) {
+    vncStatus(base + ' — retrying shortly…', { failed: true, reconnect: true });
+  } else {
+    vncStatus(base + ' — retry limit reached.', { failed: true, reconnect: true });
+  }
 }
 
 if (!cfg.streamUrl) {
@@ -122,16 +147,22 @@ const rfb = new RFB(document.getElementById('vnc'), new ChannelSocket(ch), {
 window.__rfb = rfb; // e2e hook
 
 rfb.addEventListener('connect', () => {
+  clearRetries();
   vncStatus('Connected.', { reconnect: false });
 });
 rfb.addEventListener('disconnect', (e) => {
-  // noVNC does not auto-reconnect (disconnected is a permanent state),
-  // so surface the reason and offer a manual reconnect.
+  // noVNC does not auto-reconnect (disconnected is a permanent
+  // state), so the page retries itself instead (bounded — retry.js)
+  // and offers a manual reconnect once the budget is spent. A
+  // tunnel-level SESSION_ERROR frame (wire protocol v2) carries the
+  // server's reason.
   const clean = e.detail.clean;
-  vncStatus(
-    clean ? 'Disconnected.' : 'Connection lost — the connection was dropped.',
-    { failed: !clean, reconnect: true },
-  );
+  const why = ch.terminalMessage ? ': ' + ch.terminalMessage : '';
+  if (clean) {
+    vncRetryOrReconnect('Disconnected' + why);
+  } else {
+    vncRetryOrReconnect('Connection lost — the connection was dropped' + why);
+  }
 });
 rfb.addEventListener('credentials-required', (e) => {
   const pw = window.prompt(e.detail?.title || 'VNC password:');

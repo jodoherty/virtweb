@@ -7,6 +7,7 @@
   <tr><th>vCPU</th><td>{{.VM.VCPUs}}</td></tr>
   <tr><th>Memory</th><td>{{if .VM.Memory}}{{.VM.Memory}} MiB{{else}}–{{end}}</td></tr>
   <tr><th>IP</th><td>{{if .VM.IP}}{{.VM.IP}}{{else}}–{{end}}</td></tr>
+  <tr><th>Console</th><td id="vm-console-status">–</td></tr>
   {{if .VM.VNCPort}}<tr><th>VNC</th><td>{{.Server.Host}}:{{.VM.VNCPort}}</td></tr>{{end}}
   {{if .VM.SpiceAddr}}<tr><th>SPICE</th><td>{{.VM.SpiceAddr}}</td></tr>{{end}}
 </table>
@@ -28,4 +29,5 @@
 {{else}}
 <p class="muted">XML unavailable (see banner above).</p>
 {{end}}
+<script type="application/json" id="vm-cfg">{{.CfgJSON}}</script>
 {{end}}

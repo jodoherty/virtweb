@@ -3,6 +3,7 @@
 // downlink, ordered POSTs for the uplink. No WebSocket.
 // One console session per (server, VM); a concurrent open gets 409.
 import { DuplexChannel } from './duplex.js';
+import { scheduleRetry, clearRetries } from './retry.js';
 
 const cfg = JSON.parse(document.getElementById('console-cfg').textContent);
 const statusEl = document.getElementById('console-status');
@@ -40,12 +41,28 @@ const ch = new DuplexChannel(cfg.streamUrl, cfg.inputUrl, {
 window.__duplex = ch;
 
 // Reconnect affordance, shown once the session is no longer live.
+// Reconnect also resets the auto-retry budget (a fresh attempt set).
 const reconnectBtn = document.getElementById('console-reconnect');
-if (reconnectBtn) reconnectBtn.addEventListener('click', () => location.reload());
+if (reconnectBtn)
+  reconnectBtn.addEventListener('click', () => {
+    clearRetries();
+    location.reload();
+  });
 function setStatus(msg, { failed = false, reconnect = false } = {}) {
   statusEl.textContent = msg;
   statusEl.classList.toggle('status-err', failed);
   if (reconnectBtn) reconnectBtn.hidden = !reconnect;
+}
+
+// A failed or lost session is retried automatically: a bounded
+// number of page reloads (see retry.js). Clean session ends are NOT
+// retried — the session is over, and re-attaching is the user's call.
+function retryOrReconnect(base) {
+  if (scheduleRetry()) {
+    setStatus(base + ' — retrying shortly…', { failed: true, reconnect: true });
+  } else {
+    setStatus(base + ' — retry limit reached.', { failed: true, reconnect: true });
+  }
 }
 
 const encoder = new TextEncoder();
@@ -61,22 +78,36 @@ let connected = false;
 try {
   await ch.open();
   connected = true;
+  clearRetries();
   setStatus('Connected.', { reconnect: false });
   const decoder = new TextDecoder();
   for await (const value of ch.readable) {
     term.write(decoder.decode(value, { stream: true }));
   }
   term.write(decoder.decode());
-  // Clean server-side EOF (VM stopped, console detached, …).
-  setStatus('Session ended.', { reconnect: true });
+  // The stream ended. Wire protocol v2 tells us HOW: a SESSION_ERROR
+  // frame (the session failed server-side, with the reason) is an
+  // error even though the stream closed cleanly; everything else is
+  // a clean end (VM stopped, console detached, …).
+  if (ch.closeReason === 'error') {
+    const why = ch.terminalMessage
+      ? ': ' + ch.terminalMessage
+      : ' — the session was dropped';
+    retryOrReconnect('Connection lost' + why);
+  } else {
+    setStatus('Session ended.', { reconnect: true });
+  }
 } catch (err) {
   if (err.code === 'conflict') {
-    setStatus('A console session for this VM is already open in another tab.', { reconnect: true });
+    // The session is in use elsewhere; keep trying until it frees.
+    retryOrReconnect(
+      'A console session for this VM is already open in another tab',
+    );
   } else if (err.code === 'timeout') {
-    setStatus('Connection timed out — the server did not open the console in time.', { failed: true, reconnect: true });
+    retryOrReconnect('Connection timed out — the server did not open the console in time');
   } else if (connected) {
-    setStatus('Connection lost — the session was dropped mid-stream.', { failed: true, reconnect: true });
+    retryOrReconnect('Connection lost — the session was dropped mid-stream');
   } else {
-    setStatus('Could not connect: ' + err.message, { failed: true, reconnect: true });
+    retryOrReconnect('Could not connect: ' + err.message);
   }
 }

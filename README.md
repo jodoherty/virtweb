@@ -211,7 +211,7 @@ forwards the raw TLS stream (with the PROXY header outside it), so the
 no-buffering requirement is on the TCP-forwarding path, and virtweb
 terminates TLS/mTLS itself.
 
-## Transport wire format (v1)
+## Transport wire format (v1 + v2)
 
 The console and display streams are not raw byte pipes: both
 directions speak a small length-framed protocol, one frame per
@@ -223,9 +223,11 @@ frame := [tag:1][len:4 big-endian][payload]
 
 | tag | name | use |
 |-----|------|-----|
-| `0x01` | HELLO | first frame of every downlink stream; payload `[version=1][flags=0]`. Clients refuse non-matching streams |
+| `0x01` | HELLO | first frame of every downlink stream; payload `[version=1][flags]`, where bit 0 of `flags` announces the v2 terminal frames. Clients refuse non-matching streams |
 | `0x02` | DATA | the session's raw bytes (console output/keystrokes, RFB, SPICE per channel). Each uplink POST body is one DATA frame |
 | `0x03` | KEEPALIVE | empty; emitted by *each direction* while it has been idle for the keepalive interval |
+| `0x04` | SESSION_END | **v2**, downlink only; the session ended cleanly. Empty payload. Always the last frame before the stream closes |
+| `0x05` | SESSION_ERROR | **v2**, downlink only; the session failed. Payload is the server's message (e.g. the ssh/virsh error). Always the last frame |
 
 Why frames exist, given virtweb is an opaque byte tunnel:
 
@@ -241,15 +243,20 @@ Why frames exist, given virtweb is an opaque byte tunnel:
   mid-stream desyncs a VNC/SPICE session silently; a torn or
   over-size frame fails the channel cleanly ("connection lost" +
   Reconnect) instead.
-- **Extension point.** The HELLO flags byte (currently 0) advertises
-  future capabilities — e.g. in-band terminal frames — without
-  changing the frame shape.
+- **Terminal state is in-band (v2).** The session's final state
+  arrives as a frame before the stream ends: the UI can show *why*
+  a session died (the ssh/virsh error, verbatim) instead of guessing
+  from how the stream did. The version stays at 1 — the frame shape
+  and HELLO/DATA are unchanged; v2 is a capability bit, not a new
+  version. (In-band client→server terminal frames are the planned v3
+  extension, announced the same way.)
 
 The browser parses the frames in `web/static/duplex.js`
 (`FrameDecoder`); the consumers (xterm, noVNC, the SPICE fork) only
-see DATA payloads. Terminal state in v1 is the stream itself: a clean
-server-side EOF means "session ended", an aborted connection means
-"connection lost".
+see DATA payloads. A session that ends with SESSION_ERROR surfaces as
+"Connection lost: <message>"; a clean SESSION_END as "Session
+ended.". When the *client* goes away, no terminal frame is emitted —
+the client is gone, and the stream abort is itself the signal.
 
 ## Managing VMs
 
@@ -280,6 +287,7 @@ GET    /api/servers/{id}/vms                list domains
 POST   /api/servers/{id}/vms                define domain  {xml, start?}
 DELETE /api/servers/{id}/vms/{name}         undefine domain
 GET    /api/servers/{id}/vms/{name}/xml     current domain XML (dumpxml)
+GET    /api/servers/{id}/vms/{name}/console/status   {"open":bool}
 POST   /api/servers/{id}/vms/{name}/{start|shutdown|destroy|reboot}
 GET    /api/servers/{id}/vms/{name}/console/stream   (+POST .../console/input)
 GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice
@@ -288,20 +296,30 @@ GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice
 
 ### Console / VNC / SPICE
 
-- **Console** — the serial console (`ssh -tt` → `virsh console`). The page
-  reports a distinct status for every terminal state: *Connected*,
-  *Session ended*, *Connection lost*, *Connection timed out*, *A session
-  is already open*, *Could not connect* — and offers a **Reconnect**
-  button once the session is no longer live. One console session per
-  (server, VM); a second concurrent open is refused (409).
+- **Console** — the serial console (`ssh -tt` → `virsh console`). The
+  page reports a distinct status for every terminal state: *Connected*,
+  *Session ended*, *Connection lost* (with the server's reason when the
+  session failed — wire protocol v2), *Connection timed out*, *A
+  session is already open*, *Could not connect* — and offers a
+  **Reconnect** button once the session is no longer live. One console
+  session per (server, VM); a second concurrent open is refused (409),
+  and the VM detail page shows the console as *open* while one is
+  live.
 - **VNC** — noVNC over the SSH stdio TCP tunnel (`ssh -W`). The VNC port
   is read from the domain (auto-port resolved from the live XML while the
   domain is running).
 - **SPICE** — the spice-html5 fork. Each SPICE channel opens its own
   concurrent tunnel (the same topology as websockify's
-  WebSocket-per-channel). The display address comes from `virsh
-  domdisplay` (SPICE ports are auto-assigned at boot and the display is
-  often loopback-bound).
+  WebSocket-per-channel); when the main channel fails, the sibling
+  channels are torn down with it (their tunnels close too). The
+  display address comes from `virsh domdisplay` (SPICE ports are
+  auto-assigned at boot and the display is often loopback-bound).
+
+**Auto-retry.** A console/VNC/SPICE page whose session fails or is
+lost reloads itself automatically — up to 5 times (the count
+survives the reloads in `sessionStorage`, so a dead server stops the
+loop instead of spinning). A *clean* session end is never retried: the
+session is over, and re-attaching is the user's call (Reconnect).
 
 Both display tunnels are **server-resolved**: the client names which
 display to view (`?display=vnc|spice`) and virtweb resolves the

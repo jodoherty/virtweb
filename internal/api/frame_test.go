@@ -172,7 +172,7 @@ func TestPumpFramed(t *testing.T) {
 	pr, pw := io.Pipe()
 	w := &testSink{}
 	done := make(chan struct{})
-	go pumpFramed(pr, w, 40*time.Millisecond, done)
+	go pumpFramed(pr, w, 40*time.Millisecond, nil, done)
 
 	if _, err := pw.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestPumpFramedNoKeepalive(t *testing.T) {
 	pr, pw := io.Pipe()
 	w := &testSink{}
 	done := make(chan struct{})
-	go pumpFramed(pr, w, 0, done)
+	go pumpFramed(pr, w, 0, nil, done)
 	if _, err := pw.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +248,107 @@ func TestPumpFramedNoKeepalive(t *testing.T) {
 	}
 	if len(frames) != 1 || frames[0].tag != frameData {
 		t.Fatalf("frames = %+v, want one DATA", frames)
+	}
+}
+
+// TestPumpFramedTerminal: the terminal event is emitted as the LAST
+// frame, in both arrival orders (event before pipe EOF — the handler's
+// send-then-close order — and EOF first with the event already
+// queued).
+func TestPumpFramedTerminal(t *testing.T) {
+	cases := []struct {
+		name    string
+		event   terminalEvent
+		wantTag byte
+		wantMsg string
+	}{
+		{"clean end", terminalEvent{tag: frameEnd}, frameEnd, ""},
+		{"error end", terminalEvent{tag: frameError, message: "domain 'vm1' is not running"}, frameError, "domain 'vm1' is not running"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" (event before EOF)", func(t *testing.T) {
+			sink := &testSink{}
+			pr, pw := io.Pipe()
+			termCh := make(chan terminalEvent, 1)
+			done := make(chan struct{})
+			go pumpFramed(pr, sink, 0, termCh, done)
+			pw.Write([]byte("out"))
+			frames := waitForFrames(t, sink.bodyBytes, 2*time.Second, func(f []gotFrame) bool {
+				return len(f) >= 1 && f[0].tag == frameData
+			})
+			if len(frames) < 1 || frames[0].tag != frameData || string(frames[0].payload) != "out" {
+				t.Fatalf("first frames = %+v, want DATA out", frames)
+			}
+			// The handler's order: send the event, then close the pipe.
+			termCh <- tc.event
+			pw.Close()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("pump did not finish")
+			}
+			all, rest, err := framesFrom(sink.bodyBytes())
+			if err != nil || len(rest) != 0 {
+				t.Fatalf("final frames = %+v rest=%d err=%v", all, len(rest), err)
+			}
+			if len(all) < 2 {
+				t.Fatalf("frames = %+v, want DATA + terminal", all)
+			}
+			last := all[len(all)-1]
+			if last.tag != tc.wantTag || string(last.payload) != tc.wantMsg {
+				t.Fatalf("terminal frame = %+v, want tag %#x msg %q", last, tc.wantTag, tc.wantMsg)
+			}
+			// No frame may precede or follow: exactly DATA + terminal.
+			if got := len(all); got != 2 {
+				t.Fatalf("frame count = %d, want exactly 2 (DATA + terminal): %+v", got, all)
+			}
+		})
+
+		t.Run(tc.name+" (EOF first, event queued)", func(t *testing.T) {
+			sink := &testSink{}
+			pr, pw := io.Pipe()
+			termCh := make(chan terminalEvent, 1)
+			done := make(chan struct{})
+			go pumpFramed(pr, sink, 0, termCh, done)
+			// Close the pipe first; the event is already queued (the
+			// handler sends it just before closing, so at EOF it must
+			// be there).
+			termCh <- tc.event
+			pw.Close()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("pump did not finish")
+			}
+			all, rest, err := framesFrom(sink.bodyBytes())
+			if err != nil || len(rest) != 0 {
+				t.Fatalf("frames = %+v rest=%d err=%v", all, len(rest), err)
+			}
+			if len(all) != 1 || all[0].tag != tc.wantTag || string(all[0].payload) != tc.wantMsg {
+				t.Fatalf("frames = %+v, want single terminal %q", all, tc.wantMsg)
+			}
+		})
+	}
+}
+
+// TestPumpFramedNoTerminal: no terminal event (client went away) ->
+// the stream ends silently on EOF.
+func TestPumpFramedNoTerminal(t *testing.T) {
+	sink := &testSink{}
+	pr, pw := io.Pipe()
+	termCh := make(chan terminalEvent, 1) // never written to
+	done := make(chan struct{})
+	go pumpFramed(pr, sink, 0, termCh, done)
+	pw.Write([]byte("x"))
+	pw.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump did not finish")
+	}
+	all, _, _ := framesFrom(sink.bodyBytes())
+	if len(all) != 1 || all[0].tag != frameData {
+		t.Fatalf("frames = %+v, want one DATA only", all)
 	}
 }
 

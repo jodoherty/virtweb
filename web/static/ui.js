@@ -27,3 +27,24 @@ if (copyBtn && xmlPre && navigator.clipboard?.writeText) {
     }
   });
 }
+
+// The VM detail page's "Console" row reflects whether a console
+// session is open right now (one-shot fetch on page load; the
+// Refresh link re-runs the page, so it re-fetches too).
+const consoleStatusEl = document.getElementById('vm-console-status');
+const vmCfgEl = document.getElementById('vm-cfg');
+if (consoleStatusEl && vmCfgEl) {
+  try {
+    const vmCfg = JSON.parse(vmCfgEl.textContent);
+    if (vmCfg.consoleStatusUrl) {
+      fetch(vmCfg.consoleStatusUrl)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((out) => {
+          if (!out) return;
+          consoleStatusEl.textContent = out.open ? 'open' : '–';
+          consoleStatusEl.classList.toggle('in-use', !!out.open);
+        })
+        .catch(() => {});
+    }
+  } catch { /* malformed cfg: leave the placeholder */ }
+}

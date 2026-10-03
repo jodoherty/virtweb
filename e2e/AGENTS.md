@@ -135,8 +135,8 @@ Spec files:
 | file | tier | covers |
 |------|------|--------|
 | `tests/api.spec.ts` | stub | REST: servers CRUD, ping, list, actions |
-| `tests/console-protocol.spec.ts` | stub | streaming, 409 concurrent, disconnect cleanup, input-after-close, `STUB_SCENARIO` error paths |
-| `tests/transport.spec.ts` | stub | console/VNC/SPICE transport smoke over the tunnel |
+| `tests/console-protocol.spec.ts` | stub | streaming, 409 concurrent, disconnect cleanup, input-after-close, idle KEEPALIVE, wire-protocol-v2 terminal frames, `STUB_SCENARIO` error paths |
+| `tests/transport.spec.ts` | stub | console/VNC/SPICE transport smoke over the tunnel, tunnel terminal frames, auto-retry |
 | `tests/ui.spec.ts` | stub | dashboard, add-server form, VM list, console page, start |
 | `tests/guest.real.spec.ts` | libvirt | one sequential story: lifecycle, TCG boot + real IP, real serial-console login + `echo` round-trip, VNC RFB handshake over the tunnel, shutdown |
 
@@ -147,11 +147,12 @@ the guest in a known, inspectable state.
 
 - `src/envinfo.js` — `requireEnv()` (loads the manifest), `envUrl()`.
 - `src/api.js` — `Api` (fetch wrappers for the REST API).
-- `src/frames.js` — wire protocol v1 (mirrors
+- `src/frames.js` — wire protocol (mirrors
   `web/static/duplex.js` / `internal/api/frame.go`): `encodeFrame`,
-  `TAG`, `FrameDecoder` (reassembly + HELLO check + optional
-  keepalive observer). The session helpers below speak frames, not raw
-  bytes.
+  `TAG`, `HELLO_FLAG_TERMINAL`, `FrameDecoder` (reassembly + HELLO
+  check + optional keepalive/terminal observers). The session helpers
+  below speak frames, not raw bytes, and surface terminal frames on
+  `session.terminal` ({kind: 'end'|'error', message}).
 - `src/console.js` — `openConsole()` / `ConsoleSession`: consumes the
   console stream (DATA payloads) and records **every byte** (both
   directions) to `test-results/` for the failing spec.

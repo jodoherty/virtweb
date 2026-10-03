@@ -31,7 +31,8 @@ var testWeb = fstest.MapFS{
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/start"></form>` +
 			`<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/undefine"></form>` +
-			`<pre id="vm-xml">{{.XML}}</pre>{{end}}`)},
+			`<pre id="vm-xml">{{.XML}}</pre>` +
+			`<script id="vm-cfg" type="application/json">{{.CfgJSON}}</script>{{end}}`)},
 	"templates/servers.html": &fstest.MapFile{Data: []byte(
 		`{{define "servers"}}<ul class="server-list">{{range .Servers}}<li>{{.Name}} ` +
 			`<a href="/servers/{{.ID}}">open</a></li>{{end}}</ul>` +
@@ -273,6 +274,11 @@ func TestVMPage(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("page missing link %q", want)
 		}
+	}
+
+	// the console-in-use badge fetches this status endpoint on load
+	if !strings.Contains(body, "/console/status") {
+		t.Fatalf("page missing the console status endpoint in its cfg")
 	}
 
 	// unknown VM -> 404; unknown server -> 404.

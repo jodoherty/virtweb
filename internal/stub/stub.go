@@ -47,16 +47,24 @@ const (
 	ScenarioConsoleDrop Scenario = "console-drop"
 	ScenarioSSHDown     Scenario = "ssh-down"
 	ScenarioTunnelDrop  Scenario = "tunnel-drop"
+	// tunnel-fail: the tunnel dies shortly after the banner with an
+	// error (the wire-protocol-v2 SESSION_ERROR path).
+	ScenarioTunnelFail Scenario = "tunnel-fail"
+	// console-fail: the console session fails right after attach with
+	// an error (the wire-protocol-v2 SESSION_ERROR path for consoles;
+	// everything else — list, start — works).
+	ScenarioConsoleFail Scenario = "console-fail"
 )
 
 // ParseScenario validates a STUB_SCENARIO value.
 func ParseScenario(s string) (Scenario, error) {
 	switch Scenario(s) {
 	case ScenarioNone, ScenarioFailPing, ScenarioSlowBoot,
-		ScenarioConsoleDrop, ScenarioSSHDown, ScenarioTunnelDrop:
+		ScenarioConsoleDrop, ScenarioSSHDown, ScenarioTunnelDrop, ScenarioTunnelFail,
+		ScenarioConsoleFail:
 		return Scenario(s), nil
 	}
-	return "", fmt.Errorf("unknown STUB_SCENARIO %q (want fail-ping, slow-boot, console-drop, ssh-down, or tunnel-drop)", s)
+	return "", fmt.Errorf("unknown STUB_SCENARIO %q (want fail-ping, slow-boot, console-drop, ssh-down, tunnel-drop, tunnel-fail, or console-fail)", s)
 }
 
 // VM state machine.
@@ -479,6 +487,9 @@ func (b *Backend) Console(ctx context.Context, name string, in io.Reader, out io
 	if b.scenario == ScenarioSSHDown {
 		return b.dialError()
 	}
+	if b.scenario == ScenarioConsoleFail {
+		return fmt.Errorf("stub: console attach for %q failed (scenario console-fail)", name)
+	}
 	b.mu.Lock()
 	v, err := b.lookup(name)
 	if err != nil {
@@ -625,6 +636,16 @@ func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader,
 			return nil
 		case <-time.After(consoleDropDelay):
 			return nil
+		}
+	}
+	if b.scenario == ScenarioTunnelFail {
+		// The tunnel dies shortly after the banner with an error: the
+		// SESSION_ERROR terminal frame carries this message.
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(consoleDropDelay):
+			return fmt.Errorf("stub: tunnel to %s failed (scenario tunnel-fail)", target)
 		}
 	}
 	buf := make([]byte, 4096)

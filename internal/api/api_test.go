@@ -2,13 +2,13 @@ package api
 
 import (
 	"bytes"
-	"strings"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,10 +18,19 @@ import (
 )
 
 type fakeBackend struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	actions []string
-	vms    []virt.VM
+	vms     []virt.VM
 	pingErr error
+
+	// session terminal-state injection (wire protocol v2 tests):
+	// consoleErr/tunnelErr make the session fail server-side;
+	// consoleClean/tunnelClean make it end cleanly after one DATA
+	// write.
+	consoleErr   error
+	tunnelErr    error
+	consoleClean bool
+	tunnelClean  bool
 }
 
 func (f *fakeBackend) record(ctx context.Context, action string) error {
@@ -85,6 +94,13 @@ func (f *fakeBackend) Reboot(ctx context.Context, name string) error {
 }
 func (f *fakeBackend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {
 	f.record(ctx, "console "+name)
+	if f.consoleErr != nil {
+		return f.consoleErr
+	}
+	if f.consoleClean {
+		_, _ = io.WriteString(out, "banner\n")
+		return nil
+	}
 	// echo stdin to stdout until stdin closes, like a console session
 	buf := make([]byte, 1024)
 	for {
@@ -103,6 +119,13 @@ func (f *fakeBackend) Console(ctx context.Context, name string, in io.Reader, ou
 func (f *fakeBackend) Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error {
 	if err := f.record(ctx, "tunnel "+name+" "+target); err != nil {
 		return err
+	}
+	if f.tunnelErr != nil {
+		return f.tunnelErr
+	}
+	if f.tunnelClean {
+		_, _ = io.WriteString(out, "stub-tunnel: "+name+"\n")
+		return nil
 	}
 	// banner in spaced chunks, then echo, like the stub backend
 	for _, line := range []string{"stub-tunnel: ", name, " ", target, "\n", "chunk 1\n", "chunk 2\n"} {

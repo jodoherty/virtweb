@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { requireEnv } from '../src/envinfo.js';
 import { Api } from '../src/api.js';
 import { waitFor } from '../src/wait.js';
-import { waitForNoSession } from '../src/console.js';
+import { openConsole, ConsoleSession, waitForNoSession } from '../src/console.js';
 
 let m: ReturnType<typeof requireEnv>;
 let api: Api;
@@ -112,6 +112,31 @@ test('VM detail page shows live info and the domain XML', async ({ page }) => {
   // The Refresh link re-renders the same page.
   await page.locator('a.btn[href$="/vms/debian-dev"]').click();
   await expect(page.locator('h2')).toHaveText('debian-dev');
+});
+
+test('VM detail page shows the console as in use', async ({ page }, testInfo) => {
+  // The "Console" row polls the console-status endpoint on load:
+  // "open" while a session is live (here, an API-level one from
+  // another "tab"), "–" once it is gone.
+  const s = await openConsole({
+    baseUrl: url(),
+    serverId,
+    vm: 'debian-dev',
+    logPath: testInfo.outputPath('console.log'),
+  });
+  try {
+    await page.goto(`${url()}/servers/${serverId}/vms/debian-dev`);
+    await expect(page.locator('#vm-console-status')).toContainText('open', {
+      timeout: 10_000,
+    });
+  } finally {
+    await s.close();
+    await waitForNoSession(url(), serverId, 'debian-dev');
+    await page.goto(`${url()}/servers/${serverId}/vms/debian-dev`);
+    await expect(page.locator('#vm-console-status')).toContainText('–', {
+      timeout: 10_000,
+    });
+  }
 });
 
 test('define a VM from XML, start it, destroy it', async ({ page }) => {

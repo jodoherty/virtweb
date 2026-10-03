@@ -76,9 +76,43 @@ function SpiceMainConn()
     this.file_xfer_read_queue = [];
     this.ports = [];
     this.agent_caps = [0]
+
+    // Fork: when the main channel fails, tear the sibling channels
+    // down (see close_sibling_channels). Without this their tunnels
+    // (one ssh -W session per channel) would persist until the page
+    // is closed or reloaded. The wrapper keeps the page's onerror
+    // contract: the original still runs, after the teardown.
+    var self = this;
+    if (this.onerror !== undefined) {
+        var mainOnError = this.onerror;
+        this.onerror = function(e) {
+            self.close_sibling_channels();
+            mainOnError(e);
+        };
+    }
 }
 
 SpiceMainConn.prototype = Object.create(SpiceConn.prototype);
+
+// Fork: close the sibling channels (display, inputs, cursor, playback,
+// ports, extras). Idempotent — SpiceConn.cleanup() is a no-op once the
+// channel's ws is gone, and the "closing" state keeps their close
+// events from reporting spurious "Unexpected close" errors.
+SpiceMainConn.prototype.close_sibling_channels = function()
+{
+    var sibs = [this.display, this.inputs, this.cursor, this.playback];
+    for (var i = 0; i < this.ports.length; i++)
+        sibs.push(this.ports[i]);
+    if (this.extra_channels)
+        for (i = 0; i < this.extra_channels.length; i++)
+            sibs.push(this.extra_channels[i]);
+    for (i = 0; i < sibs.length; i++) {
+        var c = sibs[i];
+        if (c && c.ws)
+            c.cleanup();
+    }
+};
+
 SpiceMainConn.prototype.process_channel_message = function(msg)
 {
     if (msg.type == Constants.SPICE_MSG_MAIN_MIGRATE_BEGIN)

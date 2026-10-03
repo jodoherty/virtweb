@@ -126,8 +126,9 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 	// The session handle for input POSTs.
 	w.Header().Set("X-Tunnel-Id", sid)
 	w.WriteHeader(http.StatusOK)
-	// Announce the wire protocol (v1) before any tunnel bytes; the
-	// client fails fast on a non-matching stream (see frame.go).
+	// Announce the wire protocol before any tunnel bytes; the
+	// client fails fast on a non-matching stream (see frame.go). The
+	// HELLO flags byte advertises the terminal frames (protocol v2).
 	if err := writeHello(w, flusher); err != nil {
 		log.Printf("tunnel %s %s: hello: %v", name, target, err)
 		return
@@ -135,9 +136,21 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 
 	// Run the tunnel; when it ends (remote end hung up, ssh error, or
 	// the client disconnected and r.Context() cancelled it), close the
-	// pipes so the pump below terminates.
+	// pipes so the pump below terminates. If the client is still here,
+	// first tell the pump to emit the terminal frame (protocol v2):
+	// SESSION_END for a clean end, SESSION_ERROR with the server's
+	// message otherwise.
+	termCh := make(chan terminalEvent, 1)
 	go func() {
 		err := b.Tunnel(r.Context(), name, target, s.inRead, s.outWrite)
+		if r.Context().Err() == nil {
+			ev := terminalEvent{tag: frameEnd}
+			if err != nil {
+				ev.tag = frameError
+				ev.message = truncateTerminalMessage(err.Error())
+			}
+			termCh <- ev
+		}
 		s.close()
 		if err != nil {
 			log.Printf("tunnel %s %s: %v", name, target, err)
@@ -145,10 +158,10 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	pumpDone := make(chan struct{})
-	go pumpFramed(s.outRead, w, a.keepalive, pumpDone)
+	go pumpFramed(s.outRead, w, a.keepalive, termCh, pumpDone)
 	select {
 	case <-r.Context().Done(): // client disconnected
-	case <-pumpDone:          // tunnel output ended
+	case <-pumpDone: // tunnel output ended
 	}
 	s.close()
 	// The pump goroutine may still be inside Write/Flush; the response

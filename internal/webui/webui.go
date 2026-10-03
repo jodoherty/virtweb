@@ -261,6 +261,12 @@ func (u *UI) handleVMPage(w http.ResponseWriter, r *http.Request) {
 	} else {
 		p.XML = xml
 	}
+	// The console-in-use badge polls this one-shot status endpoint on
+	// page load (the Refresh link re-fetches it).
+	cj, _ := json.Marshal(map[string]string{
+		"consoleStatusUrl": "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/console/status",
+	})
+	p.CfgJSON = template.JS(cj)
 	u.render(w, p)
 }
 

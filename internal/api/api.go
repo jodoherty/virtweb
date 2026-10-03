@@ -24,14 +24,14 @@ type BackendFactory interface {
 
 // API is the REST API server.
 type API struct {
-	st        *store.Store
-	factory   BackendFactory
-	mu        sync.Mutex
-	backends  map[string]virt.Backend
-	conMu     sync.Mutex
-	consoles  map[string]*pipeSession
-	tunMu     sync.Mutex
-	tunnels   map[string]*pipeSession
+	st       *store.Store
+	factory  BackendFactory
+	mu       sync.Mutex
+	backends map[string]virt.Backend
+	conMu    sync.Mutex
+	consoles map[string]*pipeSession
+	tunMu    sync.Mutex
+	tunnels  map[string]*pipeSession
 	// maxConsoles/maxTunnels bound live byte-stream sessions (a DoS
 	// cap: each session holds a remote ssh process). 429 when reached.
 	maxConsoles int
@@ -103,6 +103,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/ping", a.handlePing)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/console/input", a.handleConsoleInput)
+	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/status", a.handleConsoleStatus)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/tunnel/stream", a.handleTunnelStream)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/tunnel/input", a.handleTunnelInput)
 	return mux

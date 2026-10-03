@@ -22,9 +22,9 @@ commits touching this directory *are* the fork's history.
 
 | File | Change |
 |---|---|
-| `src/spicestream.js` | **new** — `SpiceStream`, the WebSocket-shaped channel over virtweb's `DuplexChannel` (`web/static/duplex.js`, chunked flushed GET + ordered POST uplink) |
+| `src/spicestream.js` | **new** — `SpiceStream`, the WebSocket-shaped channel over virtweb's `DuplexChannel` (`web/static/duplex.js`, chunked flushed GET + ordered POST uplink). The downlink's terminal state (wire protocol v2: a SESSION_ERROR frame or a transport failure) is reported through an `error` event before the `close`, so the page's onerror shows the server's message |
 | `src/spiceconn.js` | `SpiceConn` constructs `SpiceStream` instead of `WebSocket`; dropped the synchronous `readyState` connect check (the stream opens asynchronously; failures come through error/close); `send_msg` coalesces frames per animation tick (one atomic uplink chunk per tick — the spice stream accepts concatenated messages; this is the ordering + POST-rate guarantee); `cleanup` discards pending frames |
-| `src/main.js` | child channels clone `inputUri: this.ws.inputUrl` alongside `uri` |
+| `src/main.js` | child channels clone `inputUri: this.ws.inputUrl` alongside `uri`; `SpiceMainConn` wraps the page's `onerror` so a main-channel failure tears the sibling channels down first (`close_sibling_channels` — without it their tunnels, one ssh -W session each, persist until page close) |
 | `src/inputs.js` | `WebSocket.OPEN` → literal `1` (SpiceStream keeps the numeric readyState) |
 
 Untouched: everything else (display, cursor, playback, filexfer,

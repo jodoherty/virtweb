@@ -1,11 +1,16 @@
-// Wire protocol v1 helpers for the e2e harness — mirrors the browser's
+// Wire protocol helpers for the e2e harness — mirrors the browser's
 // FrameDecoder in web/static/duplex.js and the server in
 // internal/api/frame.go: [tag:1][len:4 big-endian][payload].
 export const TAG = {
   hello: 0x01,
   data: 0x02,
   keepalive: 0x03,
+  // protocol v2 terminal frames (announced by the HELLO flags bit):
+  sessionEnd: 0x04,
+  sessionError: 0x05,
 };
+// HELLO flags: bit 0 announces the downlink terminal frames (v2).
+export const HELLO_FLAG_TERMINAL = 0x01;
 const PROTO_VERSION = 1;
 const MAX_FRAME_PAYLOAD = 16 * 1024 * 1024;
 
@@ -23,14 +28,20 @@ export function encodeFrame(tag, payload) {
 
 // FrameDecoder reassembles frames from raw stream chunks; feed()
 // returns the DATA payloads (HELLO validated once, KEEPALIVEs dropped
-// but reported to the optional onKeepalive observer).
+// but reported to the optional onKeepalive observer, terminal frames
+// reported to the optional onTerminal observer).
 // Throws on torn/oversized/unknown frames.
 export class FrameDecoder {
-  /** @param {(e: object) => void} [onKeepalive] */
-  constructor(onKeepalive) {
+  /**
+   * @param {(e: object) => void} [onKeepalive]
+   * @param {(t: {kind: 'end'|'error', message: string}) => void} [onTerminal]
+   */
+  constructor(onKeepalive, onTerminal) {
     this.pending = null;
     this.helloSeen = false;
+    this.flags = 0; // HELLO capability bits
     this.onKeepalive = onKeepalive;
+    this.onTerminal = onTerminal;
   }
   feed(chunk) {
     const old = this.pending;
@@ -54,6 +65,7 @@ export class FrameDecoder {
           if (payload.length !== 2 || payload[0] !== PROTO_VERSION) {
             throw new Error(`unsupported protocol version ${payload.length ? payload[0] : '(none)'}`);
           }
+          this.flags = payload[1];
           this.helloSeen = true;
           break;
         case TAG.data:
@@ -61,6 +73,16 @@ export class FrameDecoder {
           break;
         case TAG.keepalive:
           this.onKeepalive?.({ tag });
+          break;
+        case TAG.sessionEnd:
+        case TAG.sessionError:
+          if (!(this.flags & HELLO_FLAG_TERMINAL)) {
+            throw new Error('terminal frame before it was announced');
+          }
+          this.onTerminal?.({
+            kind: tag === TAG.sessionEnd ? 'end' : 'error',
+            message: new TextDecoder().decode(payload),
+          });
           break;
         default:
           throw new Error('unknown frame tag 0x' + tag.toString(16));

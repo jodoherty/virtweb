@@ -65,6 +65,14 @@ function SpiceStream(o)
             }
             if (self.readyState !== 3) {
                 self.readyState = 3;
+                // Fork: the tunnel's terminal state (wire protocol v2)
+                // refines the bare stream EOF: a SESSION_ERROR frame
+                // (or a transport failure) reports the WHY through an
+                // error event before the close, so the page's onerror
+                // shows the server's message.
+                if (ch.closeReason === "error") {
+                    self._emit("error", new Error(ch.terminalMessage || "connection lost"));
+                }
                 self._emit("close", { code: 1000, reason: "" });
             }
         } catch (e) {
