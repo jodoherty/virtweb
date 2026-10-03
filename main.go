@@ -15,6 +15,12 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"git.theodohertyfamily.com/virtweb/internal/api"
+	"git.theodohertyfamily.com/virtweb/internal/sshexec"
+	"git.theodohertyfamily.com/virtweb/internal/store"
+	"git.theodohertyfamily.com/virtweb/internal/virt"
+	"git.theodohertyfamily.com/virtweb/internal/virsh"
 )
 
 //go:embed all:web
@@ -30,7 +36,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	st, err := store.New(filepath.Join(*dataDir, "servers.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	apiSrv := api.New(st, &backendFactory{ssh: &sshexec.Std{}})
+
 	mux := http.NewServeMux()
+	mux.Handle("/api/", apiSrv.Routes())
 	mux.Handle("/", http.FileServerFS(webRoot))
 
 	srv := &http.Server{
@@ -55,6 +69,15 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// backendFactory builds virsh-over-SSH backends sharing one SSH runner.
+type backendFactory struct {
+	ssh *sshexec.Std
+}
+
+func (f *backendFactory) NewBackend(srv virt.Server) virt.Backend {
+	return virsh.New(srv, f.ssh)
 }
 
 // defaultDataDir returns the default location for virtweb data.
