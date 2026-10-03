@@ -1,6 +1,19 @@
 {{define "server"}}
 <p><a href="/">←</a> <strong>{{.Server.Name}}</strong>
   <span class="muted">{{.Server.User}}@{{.Server.Host}}{{if .Server.Port}}:{{.Server.Port}}{{end}} — {{.Server.URI}}</span></p>
+<details class="edit-server">
+  <summary>Edit server</summary>
+  <form method="post" action="/servers/{{.Server.ID}}/update">
+    <div class="row">
+      <input name="name" placeholder="Name" value="{{.Server.Name}}" required>
+      <input name="user" placeholder="user" value="{{.Server.User}}" required>
+      <input name="host" placeholder="hostname" value="{{.Server.Host}}" required>
+      <input name="port" placeholder="port (22)" type="number" min="1" max="65535" value="{{if .Server.Port}}{{.Server.Port}}{{end}}">
+      <input name="uri" placeholder="libvirt URI" value="{{.Server.URI}}">
+    </div>
+    <button type="submit">Save</button>
+  </form>
+</details>
 <h2>Virtual machines</h2>
 {{if .VMs}}
 <table class="vm-table">

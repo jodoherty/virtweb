@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/jodoherty/virtweb/internal/store"
@@ -68,6 +69,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/servers", a.handleListServers)
 	mux.HandleFunc("POST /api/servers", a.handleAddServer)
 	mux.HandleFunc("GET /api/servers/{id}", a.handleGetServer)
+	mux.HandleFunc("PUT /api/servers/{id}", a.handleUpdateServer)
 	mux.HandleFunc("DELETE /api/servers/{id}", a.handleRemoveServer)
 	mux.HandleFunc("GET /api/servers/{id}/vms", a.handleListVMs)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/{action}", a.handleVMAction)
@@ -109,6 +111,30 @@ func (a *API) handleGetServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, srv)
+}
+
+func (a *API) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var srv virt.Server
+	if err := json.NewDecoder(r.Body).Decode(&srv); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	updated, err := a.st.Update(r.PathValue("id"), srv)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, "%v", err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	// The host definition changed: drop the cached backend so the next
+	// call rebuilds it against the new host/port.
+	a.mu.Lock()
+	delete(a.backends, updated.ID)
+	a.mu.Unlock()
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (a *API) handleRemoveServer(w http.ResponseWriter, r *http.Request) {

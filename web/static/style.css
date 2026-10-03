@@ -110,6 +110,26 @@ td.actions > * { margin-right: 0.3rem; }
 }
 .add-server button { margin-top: 0.6rem; }
 
+/* server edit (collapsed panel on the server page) */
+.edit-server {
+  margin-top: 0.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+}
+.edit-server summary { cursor: pointer; color: var(--muted); }
+.edit-server .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
+.edit-server input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  min-width: 110px;
+}
+.edit-server button { margin-top: 0.6rem; }
+
 /* serial console */
 .console-term {
   height: 65vh;

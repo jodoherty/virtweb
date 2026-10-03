@@ -51,6 +51,49 @@ func TestAddListGetRemove(t *testing.T) {
 	}
 }
 
+func TestUpdate(t *testing.T) {
+	s, err := New(filepath.Join(t.TempDir(), "servers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Add(virt.Server{Name: "alpha", User: "bob", Host: "alpha.example", Port: 22})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Add(virt.Server{Name: "beta", User: "carol", Host: "beta.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Update alpha: change host + port; id must be preserved.
+	upd, err := s.Update(a.ID, virt.Server{Name: "alpha", User: "bob", Host: "alpha2.example", Port: 2222, URI: "qemu:///system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upd.ID != a.ID {
+		t.Fatalf("id changed on update: %q -> %q", a.ID, upd.ID)
+	}
+	got, err := s.Get(a.ID)
+	if err != nil || got.Host != "alpha2.example" || got.Port != 2222 {
+		t.Fatalf("Get after update = %+v, %v", got, err)
+	}
+
+	// A second server's name cannot be taken.
+	if _, err := s.Update(a.ID, virt.Server{Name: "beta", User: "bob", Host: "x"}); err == nil {
+		t.Fatal("expected name-collision error on update")
+	}
+
+	// Unknown id is an error.
+	if _, err := s.Update("nope", virt.Server{Name: "n", User: "u", Host: "h"}); err == nil {
+		t.Fatal("expected error updating unknown server")
+	}
+
+	// Invalid definition is an error.
+	if _, err := s.Update(b.ID, virt.Server{Name: "beta", User: "", Host: "h"}); err == nil {
+		t.Fatal("expected validation error on update")
+	}
+}
+
 func TestPersistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "servers.json")

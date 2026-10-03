@@ -60,6 +60,34 @@ test('add server via form lands on the server page', async ({ page }) => {
   await api.deleteServer(servers.find((s) => s.name === name)?.id ?? '');
 });
 
+test('edit server form updates the definition in place', async ({ page }) => {
+  await page.goto(`${url()}/servers/${serverId}`);
+  // The edit panel is a collapsed <details>; open it.
+  await page.locator('.edit-server summary').click();
+  // Pre-populated with the current definition (env server "e2e").
+  await expect(page.locator('.edit-server input[name=name]')).toHaveValue('e2e');
+  await expect(page.locator('.edit-server input[name=host]')).toHaveValue('stub-host');
+
+  // Change only the port (the name must stay "e2e" — the env CLI
+  // re-registers the server by that name), verify it sticks, restore.
+  const before = (await api.listServers()).find((s) => s.id === serverId)!;
+  await page.locator('.edit-server input[name=port]').fill('2222');
+  await page.locator('.edit-server button[type=submit]').click();
+  await expect(page).toHaveURL(new RegExp(`/servers/${serverId}`));
+  await expect(page.locator('span.muted', { hasText: 'stub-host' })).toContainText(
+    'stub-host:2222',
+  );
+  expect((await api.listServers()).find((s) => s.id === serverId)?.port).toBe(2222);
+
+  // Restore the original definition.
+  await page.locator('.edit-server summary').click();
+  await page
+    .locator('.edit-server input[name=port]')
+    .fill(before.port ? String(before.port) : '');
+  await page.locator('.edit-server button[type=submit]').click();
+  await expect(page).toHaveURL(new RegExp(`/servers/${serverId}`));
+});
+
 test('VM list shows the default table', async ({ page }) => {
   await page.goto(`${url()}/servers/${serverId}`);
   await expect(page.locator('h2', { hasText: 'Virtual machines' })).toBeVisible();

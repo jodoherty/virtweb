@@ -191,6 +191,70 @@ func TestServerCRUD(t *testing.T) {
 	}
 }
 
+func TestServerUpdate(t *testing.T) {
+	ts, _, _ := newTestAPI(t)
+
+	// create
+	res, err := http.Post(ts.URL+"/api/servers", "application/json",
+		jsonBody(virt.Server{Name: "alpha", User: "u", Host: "h"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created virt.Server
+	json.NewDecoder(res.Body).Decode(&created)
+
+	put := func(body virt.Server) (*http.Response, virt.Server) {
+		t.Helper()
+		req, err := http.NewRequest("PUT", ts.URL+"/api/servers/"+created.ID,
+			jsonBody(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var out virt.Server
+		json.NewDecoder(r.Body).Decode(&out)
+		return r, out
+	}
+
+	// valid update: host + port change, id preserved.
+	r, up := put(virt.Server{Name: "alpha", User: "u2", Host: "h2", Port: 2222, URI: "qemu:///system"})
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("update status = %d", r.StatusCode)
+	}
+	if up.ID != created.ID {
+		t.Fatalf("id changed: %q -> %q", created.ID, up.ID)
+	}
+	if up.Host != "h2" || up.Port != 2222 {
+		t.Fatalf("updated = %+v", up)
+	}
+	// reflected in GET.
+	gr, _ := http.Get(ts.URL + "/api/servers/" + created.ID)
+	var got virt.Server
+	json.NewDecoder(gr.Body).Decode(&got)
+	if got.Host != "h2" || got.Port != 2222 {
+		t.Fatalf("get after update = %+v", got)
+	}
+
+	// invalid (missing host) -> 400.
+	r, _ = put(virt.Server{Name: "alpha", User: "u"})
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid update status = %d", r.StatusCode)
+	}
+
+	// unknown id -> 404.
+	req, _ := http.NewRequest("PUT", ts.URL+"/api/servers/nope",
+		jsonBody(virt.Server{Name: "x", User: "u", Host: "h"}))
+	res, _ = http.DefaultClient.Do(req)
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("update unknown id status = %d, want 404", res.StatusCode)
+	}
+}
+
 func TestVMListAndActions(t *testing.T) {
 	ts, ff, _ := newTestAPI(t)
 	res, _ := http.Post(ts.URL+"/api/servers", "application/json",

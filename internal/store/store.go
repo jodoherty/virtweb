@@ -117,6 +117,37 @@ func randomID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// Update replaces the definition of the server with the given id,
+// preserving its id. It fails if no such server exists, the new
+// definition is invalid, or another server already has the new name.
+func (s *Store) Update(id string, srv virt.Server) (virt.Server, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.srvs {
+		if s.srvs[i].ID != id {
+			continue
+		}
+		srv.ID = id
+		if err := Validate(srv); err != nil {
+			return virt.Server{}, err
+		}
+		if srv.URI == "" {
+			srv.URI = "qemu:///system"
+		}
+		for _, other := range s.srvs {
+			if other.ID != id && other.Name == srv.Name {
+				return virt.Server{}, fmt.Errorf("server %q already exists", srv.Name)
+			}
+		}
+		s.srvs[i] = srv
+		if err := s.persist(); err != nil {
+			return virt.Server{}, err
+		}
+		return srv, nil
+	}
+	return virt.Server{}, fmt.Errorf("server %q not found", id)
+}
+
 // Remove deletes the server with the given id and persists.
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()

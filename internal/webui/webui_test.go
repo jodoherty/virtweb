@@ -161,6 +161,41 @@ func TestAddServerValidation(t *testing.T) {
 	}
 }
 
+func TestUpdateServerForm(t *testing.T) {
+	ui, st := newTestUI(t)
+	srv := addServer(t, st)
+
+	form := url.Values{}
+	form.Set("name", "renamed")
+	form.Set("user", "u2")
+	form.Set("host", "h2")
+	form.Set("port", "2222")
+	form.Set("uri", "qemu:///system")
+	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("got %d, want 303: %s", w.Code, body(w))
+	}
+	got, err := st.Get(srv.ID) // id must be preserved
+	if err != nil || got.Name != "renamed" || got.Host != "h2" || got.Port != 2222 {
+		t.Fatalf("stored server %+v (err %v)", got, err)
+	}
+
+	// invalid (missing host) -> 400.
+	form2 := url.Values{}
+	form2.Set("name", "renamed")
+	form2.Set("user", "u2")
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form2)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", w.Code)
+	}
+
+	// unknown id -> 400.
+	w = doForm(t, ui.Routes(), "/servers/nope/update", form)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400 for unknown id", w.Code)
+	}
+}
+
 func TestServerPageListsVMs(t *testing.T) {
 	ui, st := newTestUI(t)
 	s := addServer(t, st)

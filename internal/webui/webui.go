@@ -62,6 +62,7 @@ func (u *UI) Routes() http.Handler {
 	mux.HandleFunc("GET /", u.handleServerList)
 	mux.HandleFunc("POST /servers", u.handleAddServer)
 	mux.HandleFunc("GET /servers/{id}", u.handleServer)
+	mux.HandleFunc("POST /servers/{id}/update", u.handleUpdateServer)
 	mux.HandleFunc("POST /servers/{id}/remove", u.handleRemoveServer)
 	mux.HandleFunc("POST /servers/{id}/vms/{name}/{action}", u.handleVMAction)
 	mux.HandleFunc("GET /servers/{id}/vms/{name}/console", u.handleConsolePage)
@@ -160,6 +161,48 @@ func (u *UI) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/servers/"+created.ID, http.StatusSeeOther)
+}
+
+func (u *UI) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	f := r.Form
+	srv := virt.Server{
+		Name: strings.TrimSpace(f.Get("name")),
+		User: strings.TrimSpace(f.Get("user")),
+		Host: strings.TrimSpace(f.Get("host")),
+		URI:  f.Get("uri"),
+	}
+	if p := strings.TrimSpace(f.Get("port")); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			http.Error(w, "invalid port", http.StatusBadRequest)
+			return
+		}
+		srv.Port = n
+	}
+	if srv.Name == "" || srv.User == "" || srv.Host == "" {
+		http.Error(w, "name, user and host are required", http.StatusBadRequest)
+		return
+	}
+	if srv.URI == "" {
+		srv.URI = "qemu:///system"
+	}
+	id := r.PathValue("id")
+	updated, err := u.st.Update(id, srv)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// The host definition changed: drop the cached backend so the next
+	// call rebuilds it against the new host/port.
+	u.mu.Lock()
+	delete(u.backends, id)
+	u.mu.Unlock()
+	http.Redirect(w, r, "/servers/"+updated.ID+"?ok="+url.QueryEscape("server updated"),
+		http.StatusSeeOther)
 }
 
 func (u *UI) handleRemoveServer(w http.ResponseWriter, r *http.Request) {
