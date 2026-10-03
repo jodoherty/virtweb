@@ -66,6 +66,7 @@ func (u *UI) Routes() http.Handler {
 	mux.HandleFunc("POST /servers/{id}/vms/{name}/{action}", u.handleVMAction)
 	mux.HandleFunc("GET /servers/{id}/vms/{name}/console", u.handleConsolePage)
 	mux.HandleFunc("GET /servers/{id}/vms/{name}/vnc", u.handleVNCPage)
+	mux.HandleFunc("GET /servers/{id}/vms/{name}/spice", u.handleSpicePage)
 	return mux
 }
 
@@ -257,7 +258,54 @@ func (u *UI) handleVNCPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	u.render(w, page{Page: "vnc", Title: "VNC " + vm.Name, Server: &srv, VM: &vm})
+	cfg := map[string]any{"streamUrl": "", "inputUrl": "", "password": ""}
+	if vm.VNCPort > 0 {
+		base := "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/tunnel"
+		q := "?port=" + strconv.Itoa(vm.VNCPort)
+		cfg["streamUrl"] = base + "/stream" + q
+		cfg["inputUrl"] = base + "/input" + q
+	} else {
+		cfg["reason"] = "VNC is not enabled on this VM (no VNC port reported)."
+	}
+	j, _ := json.Marshal(cfg)
+	u.render(w, page{
+		Page:    "vnc",
+		Title:   "VNC " + vm.Name,
+		Server:  &srv,
+		VM:      &vm,
+		Running: vm.Running,
+		CfgJSON: template.JS(j),
+	})
+}
+
+func (u *UI) handleSpicePage(w http.ResponseWriter, r *http.Request) {
+	id, name := r.PathValue("id"), r.PathValue("name")
+	srv, b, err := u.backend(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	vm, err := b.VMInfo(r.Context(), name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	// The SPICE port is auto-assigned at boot and the display is often
+	// loopback-bound, so the address comes from `virsh domdisplay`
+	// (vm.SpiceAddr); the page takes it as a form field default, and the
+	// tunnel endpoints use it as ?target=host:port.
+	j, _ := json.Marshal(map[string]string{
+		"tunnelBase": "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/tunnel",
+		"defaultAddr": vm.SpiceAddr,
+	})
+	u.render(w, page{
+		Page:    "spice",
+		Title:   "SPICE " + vm.Name,
+		Server:  &srv,
+		VM:      &vm,
+		Running: vm.Running,
+		CfgJSON: template.JS(j),
+	})
 }
 
 func queryError(r *http.Request) string {

@@ -14,7 +14,8 @@
 {{if eq .Page "servers"}}{{template "servers" .}}
 {{else if eq .Page "server"}}{{template "server" .}}
 {{else if eq .Page "console"}}{{template "console" .}}
-{{else}}{{template "vnc" .}}{{end}}
+{{else if eq .Page "vnc"}}{{template "vnc" .}}
+{{else}}{{template "spice" .}}{{end}}
 </main>
 </body>
 </html>{{end}}

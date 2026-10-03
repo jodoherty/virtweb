@@ -48,6 +48,15 @@ func (f *fakeRunner) Connect(_ context.Context, _, _ string, _ int, _ bool, comm
 	return nil
 }
 
+func (f *fakeRunner) Tunnel(_ context.Context, _, _ string, _ int, target string, in io.Reader, out io.Writer) error {
+	f.mu.Lock()
+	f.commands = append(f.commands, "tunnel "+target)
+	f.mu.Unlock()
+	// emulate an echo tunnel: copy stdin to out until stdin closes.
+	io.Copy(out, in)
+	return nil
+}
+
 func (f *fakeRunner) allCommands() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -215,6 +224,25 @@ func TestParseListAll(t *testing.T) {
 	}
 	if states[1] != "shut off" {
 		t.Fatalf("multi-word state mangled: %v", states)
+	}
+}
+
+func TestParseDomDisplay(t *testing.T) {
+	cases := []struct {
+		in         string
+		proto, addr string
+	}{
+		{"spice://127.0.0.1:5900\n", "spice", "127.0.0.1:5900"},
+		{"vnc://192.168.0.10:5900 (id 0)", "vnc", "192.168.0.10:5900"},
+		{"spice://0.0.0.0:5991", "spice", "0.0.0.0:5991"},
+		{"\n", "", ""},
+		{"nonsense", "", ""},
+	}
+	for _, c := range cases {
+		proto, addr := parseDomDisplay(c.in)
+		if proto != c.proto || addr != c.addr {
+			t.Errorf("parseDomDisplay(%q) = (%q,%q), want (%q,%q)", c.in, proto, addr, c.proto, c.addr)
+		}
 	}
 }
 

@@ -1,8 +1,9 @@
 // Serial console: xterm.js 6.0.0 (vendored, third-party/xtermjs, MIT)
-// over the plain-HTTP streams transport — no WebSocket:
-//   server -> client: chunked GET, consumed as a ReadableStream
-//   client -> server: small POSTs of raw bytes
+// over DuplexChannel (web/static/duplex.js): one GET stream for the
+// downlink, ordered POSTs for the uplink. No WebSocket.
 // One console session per (server, VM); a concurrent open gets 409.
+import { DuplexChannel } from './duplex.js';
+
 const cfg = JSON.parse(document.getElementById('console-cfg').textContent);
 const statusEl = document.getElementById('console-status');
 const container = document.getElementById('term');
@@ -26,37 +27,33 @@ fit.fit();
 new ResizeObserver(() => fit.fit()).observe(container);
 term.focus();
 
-// Debug/test hook (e2e suite reads the buffer through this).
+// Debug/test hook (e2e suite reads the buffer through __term, and
+// drives the transport through __duplex).
 window.__term = term;
+
+const ch = new DuplexChannel(cfg.streamUrl, cfg.inputUrl);
+window.__duplex = ch;
 
 const encoder = new TextEncoder();
 term.onData((data) => {
-  fetch(cfg.inputUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
-    body: encoder.encode(data),
-  });
+  const bytes = encoder.encode(data);
+  if (!bytes.length) return;
+  // Session loss surfaces through the stream below; the channel
+  // rejects writes after it dies, which is fine to drop.
+  ch.write(bytes).catch(() => {});
 });
 
 try {
-  const res = await fetch(cfg.streamUrl);
-  if (res.status === 409) {
-    statusEl.textContent = 'A console session for this VM is already open.';
-  } else if (!res.ok || !res.body) {
-    statusEl.textContent = 'Failed to open console (HTTP ' + res.status + ').';
-    res.body?.cancel().catch(() => {});
-  } else {
-    statusEl.textContent = 'Connected.';
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      term.write(decoder.decode(value, { stream: true }));
-    }
-    term.write(decoder.decode());
-    statusEl.textContent = 'Session ended.';
+  await ch.open();
+  statusEl.textContent = 'Connected.';
+  const decoder = new TextDecoder();
+  for await (const value of ch.readable) {
+    term.write(decoder.decode(value, { stream: true }));
   }
+  term.write(decoder.decode());
+  statusEl.textContent = 'Session ended.';
 } catch (err) {
-  statusEl.textContent = 'Console error: ' + err.message;
+  statusEl.textContent = err.code === 'conflict'
+    ? 'A console session for this VM is already open.'
+    : 'Console error: ' + err.message;
 }

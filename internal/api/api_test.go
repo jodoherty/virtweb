@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jodoherty/virtweb/internal/store"
 	"github.com/jodoherty/virtweb/internal/virt"
@@ -54,6 +55,35 @@ func (f *fakeBackend) Reboot(ctx context.Context, name string) error {
 func (f *fakeBackend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {
 	f.record(ctx, "console "+name)
 	// echo stdin to stdout until stdin closes, like a console session
+	buf := make([]byte, 1024)
+	for {
+		n, err := in.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+		}
+		if err != nil {
+			return nil
+		}
+	}
+}
+
+func (f *fakeBackend) Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error {
+	if err := f.record(ctx, "tunnel "+name+" "+target); err != nil {
+		return err
+	}
+	// banner in spaced chunks, then echo, like the stub backend
+	for _, line := range []string{"stub-tunnel: ", name, " ", target, "\n", "chunk 1\n", "chunk 2\n"} {
+		if _, werr := io.WriteString(out, line); werr != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 	buf := make([]byte, 1024)
 	for {
 		n, err := in.Read(buf)

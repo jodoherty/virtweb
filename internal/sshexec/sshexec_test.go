@@ -103,3 +103,36 @@ func TestStdRunCancellation(t *testing.T) {
 		t.Fatal("expected context deadline error")
 	}
 }
+
+func TestStdTunnel(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	ssh := &Std{SSHPath: fakeSSH(t, argsFile)}
+
+	var out bytes.Buffer
+	in := strings.NewReader("tunnel-bytes\n")
+	if err := ssh.Tunnel(context.Background(), "bob", "h", 0, "stdin-echo.h:5991", in, &out); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-N", "-W", "stdin-echo.h:5991", "bob@h"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("tunnel args missing %q: %q", want, raw)
+		}
+	}
+	if !strings.Contains(out.String(), "tunnel-bytes") {
+		t.Fatalf("stdin was not piped through the tunnel: %q", out.String())
+	}
+
+	// Failures carry stderr without mixing it into the data stream.
+	if err := ssh.Tunnel(context.Background(), "bob", "h", 0, "boom:1", strings.NewReader(""), &out); err == nil {
+		t.Fatal("expected error")
+	} else if !strings.Contains(err.Error(), "remote failure detail") {
+		t.Fatalf("error should contain stderr: %v", err)
+	}
+	if strings.Contains(out.String(), "remote failure detail") {
+		t.Fatalf("stderr leaked into the data stream: %q", out.String())
+	}
+}

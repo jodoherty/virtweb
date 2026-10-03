@@ -22,6 +22,11 @@ type Runner interface {
 	// to its stdin/stdout/stderr, blocking until the remote command exits.
 	// If tty is true a remote pty is requested (ssh -tt).
 	Connect(ctx context.Context, user, host string, port int, tty bool, command string, in io.Reader, out io.Writer) error
+
+	// Tunnel opens a local stdio TCP tunnel to target ("host:port") on the
+	// remote side, blocking until ctx is done or the tunnel ends. in/out
+	// are wired straight to the tunnel's byte streams (ssh -N -W).
+	Tunnel(ctx context.Context, user, host string, port int, target string, in io.Reader, out io.Writer) error
 }
 
 // Std is the default Runner: it execs the local system ssh binary.
@@ -100,6 +105,25 @@ func (s *Std) Connect(ctx context.Context, user, host string, port int, tty bool
 	cmd.Stdout = out
 	cmd.Stderr = out
 	return cmd.Run()
+}
+
+// Tunnel implements Runner.Tunnel with `ssh -N -W target`. stderr is kept
+// out of the data stream (it would corrupt binary protocols) and is only
+// reported on failure.
+func (s *Std) Tunnel(ctx context.Context, user, host string, port int, target string, in io.Reader, out io.Writer) error {
+	args := append(s.baseOpts(port), "-N", "-W", target, s.dest(user, host))
+	cmd := exec.CommandContext(ctx, s.sshPath(), args...)
+	cmd.Stdin = in
+	cmd.Stdout = out
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		if msg := trimTrailing(stderr.String()); msg != "" {
+			return fmt.Errorf("ssh tunnel %s: %v: %s", target, err, msg)
+		}
+	}
+	return err
 }
 
 func trimTrailing(s string) string {

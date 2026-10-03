@@ -64,6 +64,9 @@ func (b *fakeBackend) Reboot(ctx context.Context, name string) error      { retu
 func (b *fakeBackend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {
 	return nil
 }
+func (b *fakeBackend) Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error {
+	return nil
+}
 type vmNotFoundErr struct{ name string }
 
 func (e *vmNotFoundErr) Error() string { return "domain '" + e.name + "' not found" }

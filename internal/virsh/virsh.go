@@ -87,7 +87,7 @@ func (b *Backend) vMInfo(ctx context.Context, name string) (virt.VM, error) {
 	vm := virt.VM{Name: name}
 	var wg sync.WaitGroup
 	var infoErr, ipErr error
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		out, err := b.virsh(ctx, "dominfo", name)
@@ -105,6 +105,20 @@ func (b *Backend) vMInfo(ctx context.Context, name string) (virt.VM, error) {
 			return
 		}
 		vm.IP = parseDomIfAddr(out)
+	}()
+	go func() {
+		defer wg.Done()
+		// domdisplay only works on running domains and returns the
+		// primary display address, e.g. "spice://127.0.0.1:5900" or
+		// "vnc://host:5900". SPICE ports are auto-assigned at boot,
+		// so this is the only way to learn the live one.
+		out, err := b.virsh(ctx, "domdisplay", name)
+		if err != nil {
+			return // not fatal: no display / VM not running
+		}
+		if proto, addr := parseDomDisplay(out); proto == "spice" {
+			vm.SpiceAddr = addr
+		}
 	}()
 	wg.Wait()
 	if infoErr != nil {
@@ -138,6 +152,15 @@ func (b *Backend) Console(ctx context.Context, name string, in io.Reader, out io
 	defer cancel()
 	return b.run.Connect(ctx, b.srv.User, b.srv.Host, b.srv.Port, true,
 		"virsh -c "+shellQuote(b.srv.URI)+" console "+shellQuote(name), in, out)
+}
+
+// Tunnel implements virt.Backend as a local stdio TCP tunnel
+// (ssh -N -W target); target is "host:port" as reachable from the
+// remote host.
+func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Hour)
+	defer cancel()
+	return b.run.Tunnel(ctx, b.srv.User, b.srv.Host, b.srv.Port, target, in, out)
 }
 
 // parseListAll parses the output of `virsh list --all`.
@@ -207,7 +230,21 @@ func parseDomIfAddr(out string) string {
 	return ""
 }
 
-// parseKiB parses values like "2097152 KiB" into kibibytes.
+// parseDomDisplay parses `virsh domdisplay` output ("spice://host:port"
+// or "vnc://host:port") into (protocol, "host:port").
+func parseDomDisplay(out string) (string, string) {
+	out = strings.TrimSpace(out)
+	proto, rest, ok := strings.Cut(out, "://")
+	if !ok || proto == "" {
+		return "", ""
+	}
+	// strip any trailing path/query (rare, e.g. tls-channel=...)
+	if i := strings.IndexAny(rest, " /?"); i >= 0 {
+		rest = rest[:i]
+	}
+	return proto, rest
+}
+
 func parseKiB(val string) (int, error) {
 	fields := strings.Fields(val)
 	if len(fields) == 0 {

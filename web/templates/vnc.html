@@ -1,6 +1,8 @@
 {{define "vnc"}}
-<p><a href="/servers/{{.Server.ID}}">←</a> VNC — <strong>{{.VM.Name}}</strong></p>
-<p id="vnc-status" class="muted">Loading noVNC…</p>
+<p><a href="/servers/{{.Server.ID}}">←</a> VNC — <strong>{{.VM.Name}}</strong>
+  <span class="muted">({{.VM.State}})</span></p>
+<p id="vnc-status" class="muted">Connecting…</p>
 <div id="vnc" class="vnc-frame"></div>
+<script type="application/json" id="vnc-cfg">{{.CfgJSON}}</script>
 <script type="module" src="/static/vnc.js"></script>
 {{end}}

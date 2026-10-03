@@ -108,7 +108,15 @@ test('console page for a shut-off VM shows the start hint', async ({ page }) => 
   await expect(page.locator('#term')).toHaveCount(0);
 });
 
-test('VNC page loads noVNC (M6 placeholder)', async ({ page }) => {
+test('VNC page loads noVNC and attempts a tunnel connection', async ({ page }) => {
+  // The VNC transport is live (M6): noVNC is wired over the plain-HTTP
+  // tunnel endpoints. The stub tunnel is not a real RFB server, so the
+  // handshake fails — the point here is that the page attempts a real
+  // connection rather than showing the old "transport arrives in M6"
+  // placeholder. (transport.spec.ts covers the transport itself.)
   await page.goto(`${url()}/servers/${serverId}/vms/win10/vnc`);
-  await expect(page.locator('#vnc-status')).toHaveText(/noVNC is loaded/);
+  await expect(page.locator('#vnc')).toHaveCount(1);
+  await expect(page.locator('#vnc-status')).toContainText(
+    /Connecting|Connected|Connection lost|Disconnected/,
+  );
 });

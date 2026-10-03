@@ -27,14 +27,17 @@ type API struct {
 	mu        sync.Mutex
 	backends  map[string]virt.Backend
 	conMu     sync.Mutex
-	consoles  map[string]*consoleSession
+	consoles  map[string]*pipeSession
+	tunMu     sync.Mutex
+	tunnels   map[string]*pipeSession
 }
 
 // New builds an API over the given store and factory.
 func New(st *store.Store, factory BackendFactory) *API {
 	return &API{st: st, factory: factory,
 		backends: map[string]virt.Backend{},
-		consoles: map[string]*consoleSession{}}
+		consoles: map[string]*pipeSession{},
+		tunnels:  map[string]*pipeSession{}}
 }
 
 // backend returns the cached backend for a server id.
@@ -65,6 +68,8 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/ping", a.handlePing)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/console/input", a.handleConsoleInput)
+	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/tunnel/stream", a.handleTunnelStream)
+	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/tunnel/input", a.handleTunnelInput)
 	return mux
 }
 

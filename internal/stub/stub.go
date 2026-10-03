@@ -46,16 +46,17 @@ const (
 	ScenarioSlowBoot    Scenario = "slow-boot"
 	ScenarioConsoleDrop Scenario = "console-drop"
 	ScenarioSSHDown     Scenario = "ssh-down"
+	ScenarioTunnelDrop  Scenario = "tunnel-drop"
 )
 
 // ParseScenario validates a STUB_SCENARIO value.
 func ParseScenario(s string) (Scenario, error) {
 	switch Scenario(s) {
 	case ScenarioNone, ScenarioFailPing, ScenarioSlowBoot,
-		ScenarioConsoleDrop, ScenarioSSHDown:
+		ScenarioConsoleDrop, ScenarioSSHDown, ScenarioTunnelDrop:
 		return Scenario(s), nil
 	}
-	return "", fmt.Errorf("unknown STUB_SCENARIO %q (want fail-ping, slow-boot, console-drop, or ssh-down)", s)
+	return "", fmt.Errorf("unknown STUB_SCENARIO %q (want fail-ping, slow-boot, console-drop, ssh-down, or tunnel-drop)", s)
 }
 
 // VM state machine.
@@ -85,13 +86,14 @@ type VMSpec struct {
 	MemoryMiB int
 	IP        string // address while running ("", if none)
 	VNCPort   int    // 0 if not VNC-enabled
+	SpiceAddr string // "host:port" while running ("" if none)
 	Initial   string // "", "shut off" or "running"
 }
 
 // defaultVMs is the deterministic fake host's table.
 var defaultVMs = []VMSpec{
-	{Name: "debian-dev", VCPUs: 2, MemoryMiB: 4096, IP: "192.168.100.50"},
-	{Name: "win10", VCPUs: 4, MemoryMiB: 8192, IP: "192.168.168.51", VNCPort: 5901},
+	{Name: "debian-dev", VCPUs: 2, MemoryMiB: 4096, IP: "192.168.100.50", SpiceAddr: "127.0.0.1:5991"},
+	{Name: "win10", VCPUs: 4, MemoryMiB: 8192, IP: "192.168.168.51", VNCPort: 5901, SpiceAddr: "127.0.0.1:5992"},
 }
 
 type vm struct {
@@ -244,6 +246,7 @@ func (b *Backend) vmToVirt(vm *vm) virt.VM {
 	}
 	if vm.state == stRunning {
 		v.IP = vm.spec.IP
+		v.SpiceAddr = vm.spec.SpiceAddr
 	}
 	return v
 }
@@ -473,6 +476,56 @@ func (b *Backend) shell(ctx context.Context, vm *vm, p shellProfile, in io.Reade
 				_, _ = out.Write([]byte{ib.b}) // echo like a real getty
 				line = append(line, ib.b)
 			}
+		}
+	}
+}
+
+// Tunnel implements virt.Backend with a deterministic fake TCP service:
+// a small banner written in spaced chunks (so stream consumers see
+// incremental arrival, like a real tunneled service), then a raw echo
+// of everything sent in, until the session ends.
+func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	_, err := b.lookup(name)
+	b.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, line := range []string{
+		"stub-tunnel: ", name, " ", target, "\n", "chunk 1\n", "chunk 2\n",
+	} {
+		if _, werr := io.WriteString(out, line); werr != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+	if b.scenario == ScenarioTunnelDrop {
+		// Remote end hangs up shortly after the banner: the UI's
+		// "stream ended" path.
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(consoleDropDelay):
+			return nil
+		}
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := in.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return nil
+			}
+		}
+		if rerr != nil {
+			return nil
 		}
 	}
 }

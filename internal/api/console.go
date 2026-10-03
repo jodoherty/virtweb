@@ -25,9 +25,13 @@ import (
 // maxInputBody caps a single input POST (keystroke bursts are tiny).
 const maxInputBody = 64 << 10
 
-var errConsoleClosed = errors.New("console session is closed")
+var errStreamClosed = errors.New("stream session is closed")
 
-type consoleSession struct {
+// pipeSession is the shared server-side session for byte-stream
+// endpoints (serial console, TCP tunnels): browser POST bodies are
+// written into inWrite, and the backend's output is read from outRead
+// and pumped to the flushed GET response.
+type pipeSession struct {
 	mu       sync.Mutex
 	inWrite  *io.PipeWriter // console input: input POSTs write here
 	outRead  *io.PipeReader // console output: the stream handler reads here
@@ -36,10 +40,10 @@ type consoleSession struct {
 	dead     bool
 }
 
-func newConsoleSession() *consoleSession {
+func newPipeSession() *pipeSession {
 	inRead, inWrite := io.Pipe()
 	outRead, outWrite := io.Pipe()
-	return &consoleSession{
+	return &pipeSession{
 		inWrite:  inWrite,
 		outRead:  outRead,
 		inRead:   inRead,
@@ -47,12 +51,12 @@ func newConsoleSession() *consoleSession {
 	}
 }
 
-// write queues console input bytes.
-func (s *consoleSession) write(p []byte) error {
+// write queues stream input bytes.
+func (s *pipeSession) write(p []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dead {
-		return errConsoleClosed
+		return errStreamClosed
 	}
 	_, err := s.inWrite.Write(p)
 	return err
@@ -60,7 +64,7 @@ func (s *consoleSession) write(p []byte) error {
 
 // close terminates the session: closing the pipe ends makes the
 // backend's read fail and the stream handler's read hit EOF.
-func (s *consoleSession) close() {
+func (s *pipeSession) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dead {
@@ -87,7 +91,7 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "console for %q is already open", name)
 		return
 	}
-	s := newConsoleSession()
+	s := newPipeSession()
 	a.consoles[key] = s
 	a.conMu.Unlock()
 	defer a.dropConsole(key, s)
@@ -95,6 +99,9 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	// Reverse proxies must pass the stream through unbuffered and
+	// uncompressed (h2 or not); see AGENTS.md.
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	if flusher != nil {
 		flusher.Flush()
@@ -162,7 +169,7 @@ func (a *API) handleConsoleInput(w http.ResponseWriter, r *http.Request) {
 
 // dropConsole removes a finished session from the registry so the key
 // can be reused by a new stream.
-func (a *API) dropConsole(key string, s *consoleSession) {
+func (a *API) dropConsole(key string, s *pipeSession) {
 	a.conMu.Lock()
 	defer a.conMu.Unlock()
 	if cur, ok := a.consoles[key]; ok && cur == s {

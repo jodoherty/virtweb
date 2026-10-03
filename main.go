@@ -29,15 +29,19 @@ import (
 //go:embed web
 var webFS embed.FS
 
-// Vendored, unmodified (see third-party/*/PROVENANCE.md):
-//   xterm.js 6.0.0 + addon-fit 0.11.0 (MIT)  -> serial console
-//   noVNC 1.7.0 (MPL-2.0)                     -> VNC viewer (M6)
+// Vendored (see third-party/*/PROVENANCE.md):
+//   xterm.js 6.0.0 + addon-fit 0.11.0 (MIT)               -> serial console
+//   noVNC 1.7.0 (MPL-2.0), unmodified                     -> VNC viewer
+//   spice-html5 fork (LGPL-3.0), transport forked by us   -> SPICE viewer
 //
 //go:embed third-party/xtermjs
 var xtermFS embed.FS
 //
 //go:embed third-party/novnc
 var novncFS embed.FS
+//
+//go:embed third-party/spice-html5-fork
+var spiceFS embed.FS
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "address to listen on")
@@ -81,7 +85,7 @@ func main() {
 	mux.Handle("/api/", apiSrv.Routes())
 	mux.Handle("/static/", webui.Static(webRoot))
 	mux.Handle("/", ui.Routes())
-	for prefix, fsys := range map[string]embed.FS{"/xtermjs/": xtermFS, "/novnc/": novncFS} {
+	for prefix, fsys := range map[string]embed.FS{"/xtermjs/": xtermFS, "/novnc/": novncFS, "/spice/": spiceFS} {
 		sub, err := subVendored(fsys, prefix)
 		if err != nil {
 			log.Fatal(err)
@@ -117,6 +121,7 @@ func main() {
 var vendoredDirs = map[string]string{
 	"/xtermjs/": "third-party/xtermjs",
 	"/novnc/":   "third-party/novnc",
+	"/spice/":   "third-party/spice-html5-fork",
 }
 
 func subVendored(fsys embed.FS, urlPrefix string) (fs.FS, error) {

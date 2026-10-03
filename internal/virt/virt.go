@@ -27,7 +27,8 @@ type VM struct {
 	VCPUs   int    `json:"vcpus,omitempty"`
 	Memory  int    `json:"memory,omitempty"` // MiB
 	IP      string `json:"ip,omitempty"`
-	VNCPort int    `json:"vncPort,omitempty"` // 0 if not VNC-enabled
+	SpiceAddr string `json:"spiceAddr,omitempty"` // SPICE "host:port" (from domdisplay); "" if none/absent
+	VNCPort int    `json:"vncPort,omitempty"`     // 0 if not VNC-enabled
 }
 
 // Backend is the surface virtweb uses to manage one libvirt host.
@@ -49,4 +50,9 @@ type Backend interface {
 	// Console attaches the VM's serial console to in/out for the lifetime of
 	// ctx (or until the console session ends on the remote side).
 	Console(ctx context.Context, name string, in io.Reader, out io.Writer) error
+
+	// Tunnel opens a TCP tunnel to target ("host:port") on the remote
+	// host, wiring in/out for the lifetime of ctx. The VM name identifies
+	// the session (logging, one session per (VM, target)).
+	Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error
 }
