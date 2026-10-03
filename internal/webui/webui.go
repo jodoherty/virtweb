@@ -62,6 +62,7 @@ func (u *UI) Routes() http.Handler {
 	mux.HandleFunc("GET /", u.handleServerList)
 	mux.HandleFunc("POST /servers", u.handleAddServer)
 	mux.HandleFunc("GET /servers/{id}", u.handleServer)
+	mux.HandleFunc("GET /servers/{id}/vms/{name}", u.handleVMPage)
 	mux.HandleFunc("POST /servers/{id}/update", u.handleUpdateServer)
 	mux.HandleFunc("POST /servers/{id}/remove", u.handleRemoveServer)
 	mux.HandleFunc("POST /servers/{id}/vms/{name}/{action}", u.handleVMAction)
@@ -94,6 +95,8 @@ type page struct {
 	VMs     []virt.VM
 	VM      *virt.VM
 	Running bool
+	// XML is the domain XML shown on the VM detail page (virsh dumpxml).
+	XML string
 	// CfgJSON is the console page's {streamUrl, inputUrl} config, JSON
 	// produced by json.Marshal over PathEscaped URLs. Marked template.JS
 	// so it is emitted raw inside the <script> (no re-escaping into a JS
@@ -231,6 +234,32 @@ func (u *UI) handleServer(w http.ResponseWriter, r *http.Request) {
 		p.Err = "list VMs: " + err.Error()
 	} else {
 		p.VMs = vms
+	}
+	u.render(w, p)
+}
+
+// handleVMPage renders the per-VM detail page: live state from VMInfo
+// and the current domain XML from DumpXML.
+func (u *UI) handleVMPage(w http.ResponseWriter, r *http.Request) {
+	id, name := r.PathValue("id"), r.PathValue("name")
+	srv, b, err := u.backend(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	vm, err := b.VMInfo(r.Context(), name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	p := page{Page: "vm", Title: name, OK: r.URL.Query().Get("ok"), Err: queryError(r),
+		Server: &srv, VM: &vm}
+	if xml, err := b.DumpXML(r.Context(), name); err != nil {
+		if p.Err == "" {
+			p.Err = "xml: " + err.Error()
+		}
+	} else {
+		p.XML = xml
 	}
 	u.render(w, p)
 }

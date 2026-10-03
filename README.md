@@ -205,13 +205,16 @@ terminates TLS/mTLS itself.
 
 Once a server is added, its page lists every domain with state, vCPUs,
 memory, IP (from `domifaddr`), and — for a running domain — its live
-display address. Row actions: **Start / Shutdown / Destroy / Reboot /
-Undefine** (Undefine deletes the domain definition and is only offered
-when the domain is shut off; it asks for confirmation), plus open a VM's
-console / VNC / SPICE page. A server page also has a collapsed
-**"Define a VM"** panel: paste a libvirt domain XML document, optionally
-"start immediately", submit. The server is edited in place from its page
-as well (host/port/user, name, display mode).
+display address. Click a VM's name for its **detail page**: live state,
+resource info, display addresses, the usual actions, and the current
+domain XML (`virsh dumpxml`) with a copy button. Row actions on the
+server page: **Start / Shutdown / Destroy / Reboot / Undefine** (Undefine
+deletes the domain definition and is only offered when the domain is
+shut off; it asks for confirmation), plus open a VM's console / VNC /
+SPICE page. A server page also has a collapsed **"Define a VM"** panel:
+paste a libvirt domain XML document, optionally "start immediately",
+submit. The server is edited in place from its page as well
+(host/port/user, name, display mode).
 
 ### HTTP API
 
@@ -226,6 +229,7 @@ DELETE /api/servers/{id}                    delete server
 GET    /api/servers/{id}/vms                list domains
 POST   /api/servers/{id}/vms                define domain  {xml, start?}
 DELETE /api/servers/{id}/vms/{name}         undefine domain
+GET    /api/servers/{id}/vms/{name}/xml     current domain XML (dumpxml)
 POST   /api/servers/{id}/vms/{name}/{start|shutdown|destroy|reboot}
 GET    /api/servers/{id}/vms/{name}/console/stream   (+POST .../console/input)
 GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice

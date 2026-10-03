@@ -14,6 +14,7 @@
 {{if .OK}}<div class="banner ok">{{.OK}}</div>{{end}}
 {{if eq .Page "servers"}}{{template "servers" .}}
 {{else if eq .Page "server"}}{{template "server" .}}
+{{else if eq .Page "vm"}}{{template "vm" .}}
 {{else if eq .Page "console"}}{{template "console" .}}
 {{else if eq .Page "vnc"}}{{template "vnc" .}}
 {{else}}{{template "spice" .}}{{end}}

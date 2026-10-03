@@ -1,0 +1,31 @@
+{{define "vm"}}
+<p><a href="/servers/{{.Server.ID}}">← {{.Server.Name}}</a>
+  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}">↻ Refresh</a></p>
+<h2>{{.VM.Name}}</h2>
+<table class="vm-info">
+  <tr><th>State</th><td class="{{if .VM.Running}}running{{else}}stopped{{end}}">{{.VM.State}}</td></tr>
+  <tr><th>vCPU</th><td>{{.VM.VCPUs}}</td></tr>
+  <tr><th>Memory</th><td>{{if .VM.Memory}}{{.VM.Memory}} MiB{{else}}–{{end}}</td></tr>
+  <tr><th>IP</th><td>{{if .VM.IP}}{{.VM.IP}}{{else}}–{{end}}</td></tr>
+  {{if .VM.VNCPort}}<tr><th>VNC</th><td>{{.Server.Host}}:{{.VM.VNCPort}}</td></tr>{{end}}
+  {{if .VM.SpiceAddr}}<tr><th>SPICE</th><td>{{.VM.SpiceAddr}}</td></tr>{{end}}
+</table>
+<p class="actions">
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/start"><button>Start</button></form>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/shutdown"><button>Shutdown</button></form>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/destroy"
+        data-confirm="Destroy {{.VM.Name}} now?"><button class="danger">Destroy</button></form>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/reboot"><button>Reboot</button></form>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/undefine"
+        data-confirm="Undefine {{.VM.Name}}? This deletes the domain definition (it must be shut off)."><button class="danger">Undefine</button></form>
+  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/console">Console</a>
+  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>
+  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/spice">SPICE</a>
+</p>
+<h3>Domain XML <button type="button" id="copy-xml" class="muted">Copy</button></h3>
+{{if .XML}}
+<pre class="vm-xml" id="vm-xml">{{.XML}}</pre>
+{{else}}
+<p class="muted">XML unavailable (see banner above).</p>
+{{end}}
+{{end}}

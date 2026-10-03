@@ -74,6 +74,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/vms", a.handleListVMs)
 	mux.HandleFunc("POST /api/servers/{id}/vms", a.handleDefineVM)
 	mux.HandleFunc("DELETE /api/servers/{id}/vms/{name}", a.handleUndefineVM)
+	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/xml", a.handleVMXML)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/{action}", a.handleVMAction)
 	mux.HandleFunc("GET /api/servers/{id}/ping", a.handlePing)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
@@ -233,6 +234,22 @@ func (a *API) handleUndefineVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleVMXML returns the domain's current libvirt XML (virsh dumpxml).
+func (a *API) handleVMXML(w http.ResponseWriter, r *http.Request) {
+	_, b, err := a.backend(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	xml, err := b.DumpXML(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "dumpxml: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+	w.Write([]byte(xml))
 }
 
 func (a *API) handleVMAction(w http.ResponseWriter, r *http.Request) {

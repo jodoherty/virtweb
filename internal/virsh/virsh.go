@@ -227,6 +227,11 @@ func (b *Backend) Undefine(ctx context.Context, name string) error {
 	return err
 }
 
+// DumpXML implements virt.Backend with `virsh dumpxml`.
+func (b *Backend) DumpXML(ctx context.Context, name string) (string, error) {
+	return b.virsh(ctx, "dumpxml", name)
+}
+
 // Console implements virt.Backend by opening `virsh console` over a
 // remote pty (ssh -tt) and wiring the streams through.
 func (b *Backend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {

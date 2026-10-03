@@ -46,6 +46,15 @@ func (f *fakeBackend) VMInfo(ctx context.Context, name string) (virt.VM, error) 
 	}
 	return virt.VM{Name: name}, nil
 }
+func (f *fakeBackend) DumpXML(ctx context.Context, name string) (string, error) {
+	f.mu.Lock()
+	f.actions = append(f.actions, "dumpxml "+name)
+	f.mu.Unlock()
+	if name == "boom" {
+		return "", errors.New("fake dumpxml failed")
+	}
+	return "<domain type='kvm'><name>" + name + "</name></domain>", nil
+}
 func (f *fakeBackend) Define(ctx context.Context, xml string) error {
 	name := virt.DomainName(xml)
 	if name == "" {
@@ -327,6 +336,40 @@ func TestDefineVM(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing recorded defines: %v (all: %v)", want, acts)
+	}
+}
+
+func TestVMXML(t *testing.T) {
+	ts, _, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+
+	res, err := http.Get(ts.URL + "/api/servers/" + id + "/vms/vm1/xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "text/xml; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	body, _ := io.ReadAll(res.Body)
+	if string(body) != "<domain type='kvm'><name>vm1</name></domain>" {
+		t.Fatalf("body = %q", body)
+	}
+
+	// failing backend -> 502
+	res, _ = http.Get(ts.URL + "/api/servers/" + id + "/vms/boom/xml")
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("boom status = %d, want 502", res.StatusCode)
+	}
+	// unknown server -> 404
+	res, _ = http.Get(ts.URL + "/api/servers/nope/vms/x/xml")
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown server status = %d, want 404", res.StatusCode)
 	}
 }
 

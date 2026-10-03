@@ -59,6 +59,9 @@ type Backend interface {
 	// VMInfo returns the details for one VM.
 	VMInfo(ctx context.Context, name string) (VM, error)
 
+	// DumpXML returns the domain's current libvirt XML (virsh dumpxml).
+	DumpXML(ctx context.Context, name string) (string, error)
+
 	// Define creates a persistent domain from a libvirt domain XML
 	// document (the caller has already validated that it names a
 	// domain). The domain starts shut off; Start it afterwards.

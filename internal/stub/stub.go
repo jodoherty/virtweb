@@ -296,6 +296,72 @@ func (b *Backend) Undefine(ctx context.Context, name string) error {
 	return nil
 }
 
+// DumpXML implements virt.Backend with a canned domain XML shaped like
+// real `virsh dumpxml` output (the @real tier is the authority); the
+// fields track the stub VM's spec so UI tests see plausible content.
+func (b *Backend) DumpXML(ctx context.Context, name string) (string, error) {
+	if b.scenario == ScenarioSSHDown {
+		return "", b.dialError()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	vm, ok := b.vms[name]
+	if !ok {
+		return "", fmt.Errorf("domain %q not found", name)
+	}
+	s := vm.spec
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<domain type='kvm'>
+  <name>%s</name>
+  <uuid>%s</uuid>
+  <memory unit='KiB'>%d</memory>
+  <currentMemory unit='KiB'>%d</currentMemory>
+  <vcpu placement='static'>%d</vcpu>
+  <os>
+    <type arch='x86_64' machine='pc'>hvm</type>
+  </os>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/var/lib/libvirt/images/%s.qcow2'/>
+    </disk>
+    <interface type='network'>
+      <mac address='%s'/>
+      <source network='default' port='1'/>
+      <model type='virtio'/>
+    </interface>
+%s  </devices>
+</domain>
+`,
+		name, macFromName(name), s.MemoryMiB*1024, s.MemoryMiB*1024, s.VCPUs, name, macFromName(name),
+		graphicsXML(s)), nil
+}
+
+// graphicsXML renders the display device the way dumpxml would: SPICE
+// when the spec has an address, VNC when it has a VNC port.
+func graphicsXML(s VMSpec) string {
+	switch {
+	case s.SpiceAddr != "":
+		return "    <graphics type='spice' port='5900' autoport='no' listen='127.0.0.1'/>\n"
+	case s.VNCPort > 0:
+		return fmt.Sprintf("    <graphics type='vnc' port='%d' listen='127.0.0.1'/>\n", s.VNCPort)
+	default:
+		return ""
+	}
+}
+
+// macFromName derives a deterministic OUI-prefixed MAC from a name
+// (purely cosmetic; keeps the canned XML stable across calls).
+func macFromName(name string) string {
+	var h uint32 = 2166136261 // FNV-1a
+	for i := 0; i < len(name); i++ {
+		h ^= uint32(name[i])
+		h *= 16777619
+	}
+	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", h>>8&0xff, h>>16&0xff, h&0xff)
+}
+
 // Start implements virt.Backend. The transition to running is delayed
 // by bootDelay (the observable in-between state is "starting").
 func (b *Backend) Start(ctx context.Context, name string) error {

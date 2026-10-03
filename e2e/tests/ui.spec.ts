@@ -88,6 +88,32 @@ test('edit server form updates the definition in place', async ({ page }) => {
   await expect(page).toHaveURL(new RegExp(`/servers/${serverId}`));
 });
 
+test('VM detail page shows live info and the domain XML', async ({ page }) => {
+  // Arrive via the name link on the server page.
+  await page.goto(`${url()}/servers/${serverId}`);
+  await page.locator('.vm-table a', { hasText: 'debian-dev' }).click();
+  await expect(page.locator('h2')).toHaveText('debian-dev');
+
+  // The info table shows at least state/vCPU/memory rows.
+  for (const label of ['State', 'vCPU', 'Memory']) {
+    await expect(page.locator('.vm-info th', { hasText: label })).toBeVisible();
+  }
+
+  // The domain XML is present (HTML-escaped in the <pre>), and the
+  // Copy button exists for it.
+  await expect(page.locator('#vm-xml')).toContainText('<name>debian-dev</name>');
+  await expect(page.locator('#copy-xml')).toBeVisible();
+
+  // Action forms + display links are offered from the detail page.
+  await expect(page.locator('form[action$="/start"]')).toBeVisible();
+  await expect(page.locator('form[action$="/undefine"]')).toBeVisible();
+  await expect(page.locator('a[href$="/console"]')).toBeVisible();
+
+  // The Refresh link re-renders the same page.
+  await page.locator('a.btn[href$="/vms/debian-dev"]').click();
+  await expect(page.locator('h2')).toHaveText('debian-dev');
+});
+
 test('define a VM from XML, start it, destroy it', async ({ page }) => {
   const name = `def-${Date.now()}`;
   const xml = `<domain type='kvm'>

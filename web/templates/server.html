@@ -37,7 +37,7 @@
   <tr><th>Name</th><th>State</th><th>vCPU</th><th>Memory</th><th>IP</th><th>Actions</th></tr>
   {{range .VMs}}
   <tr class="{{if .Running}}running{{else}}stopped{{end}}">
-    <td>{{.Name}}</td>
+    <td><a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}">{{.Name}}</a></td>
     <td>{{.State}}</td>
     <td>{{.VCPUs}}</td>
     <td>{{if .Memory}}{{.Memory}} MiB{{else}}–{{end}}</td>

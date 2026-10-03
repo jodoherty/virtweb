@@ -174,3 +174,37 @@ td.actions > * { margin-right: 0.3rem; }
 
 /* console/vnc/spice status when something went wrong */
 .status-err { color: var(--danger); }
+
+/* VM detail page */
+.vm-info {
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+}
+.vm-info th {
+  text-align: left;
+  color: var(--muted);
+  padding: 0.25rem 1rem 0.25rem 0;
+  font-weight: normal;
+  white-space: nowrap;
+}
+.vm-info td { padding: 0.25rem 0; }
+.vm-info td.running { color: var(--ok, #1a7f37); font-weight: bold; }
+.vm-info td.stopped { color: var(--muted); }
+.vm-xml {
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+#copy-xml {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+}
+#copy-xml:hover { border-color: var(--accent); color: var(--accent); }

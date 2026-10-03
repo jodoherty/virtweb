@@ -114,6 +114,15 @@ const domIfAddr = ` Name       MAC address          Protocol   Address
 vnet0      52:54:00:aa:bb:cc     ipv4       192.168.122.15/24
 `
 
+// domXML is canned `virsh dumpxml` output for TestDumpXML.
+const domXML = `<?xml version='0.1' encoding='UTF-8'?>
+<domain type='kvm'>
+  <name>newvm</name>
+  <memory unit='KiB'>2097152</memory>
+  <vcpu>2</vcpu>
+</domain>
+`
+
 func newFake() (*fakeRunner, *Backend) {
 	fr := &fakeRunner{
 		responses: map[string]string{
@@ -123,6 +132,8 @@ func newFake() (*fakeRunner, *Backend) {
 			`virsh -c qemu:///system destroy fedora42`:  "",
 			`virsh -c qemu:///system reboot fedora42`:   "",
 			`virsh -c qemu:///system undefine newvm`:   "",
+			`virsh -c qemu:///system dumpxml newvm`:      domXML,
+
 			`virsh -c qemu:///system dominfo fedora42`: domInfoFedora,
 			`virsh -c qemu:///system dominfo win11`: domInfoWin11,
 			`virsh -c qemu:///system domifaddr fedora42`: domIfAddr,
@@ -417,6 +428,21 @@ func TestUndefine(t *testing.T) {
 	}
 	cmds := fr.allCommands()
 	if len(cmds) != 1 || cmds[0] != "virsh -c qemu:///system undefine newvm" {
+		t.Fatalf("commands = %v", cmds)
+	}
+}
+
+func TestDumpXML(t *testing.T) {
+	fr, b := newFake()
+	xml, err := b.DumpXML(context.Background(), "newvm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if xml != domXML {
+		t.Fatalf("DumpXML = %q, want the canned dumpxml output", xml)
+	}
+	cmds := fr.allCommands()
+	if len(cmds) != 1 || cmds[0] != "virsh -c qemu:///system dumpxml newvm" {
 		t.Fatalf("commands = %v", cmds)
 	}
 }

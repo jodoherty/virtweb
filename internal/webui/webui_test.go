@@ -23,8 +23,15 @@ var testWeb = fstest.MapFS{
 		`{{define "layout"}}<html><body>{{if .Err}}<div class="banner error">{{.Err}}</div>{{end}}` +
 			`{{if .OK}}<div class="banner ok">{{.OK}}</div>{{end}}` +
 			`{{if eq .Page "servers"}}{{template "servers" .}}{{else if eq .Page "server"}}{{template "server" .}}` +
-			`{{else if eq .Page "console"}}{{template "console" .}}{{else}}{{template "vnc" .}}{{end}}` +
+			`{{else if eq .Page "vm"}}{{template "vm" .}}{{else if eq .Page "console"}}{{template "console" .}}` +
+			`{{else}}{{template "vnc" .}}{{end}}` +
 			`</body></html>{{end}}`)},
+	"templates/vm.html": &fstest.MapFile{Data: []byte(
+		`{{define "vm"}}<h2>{{.VM.Name}}</h2>` +
+			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/start"></form>` +
+			`<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
+			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/undefine"></form>` +
+			`<pre id="vm-xml">{{.XML}}</pre>{{end}}`)},
 	"templates/servers.html": &fstest.MapFile{Data: []byte(
 		`{{define "servers"}}<ul class="server-list">{{range .Servers}}<li>{{.Name}} ` +
 			`<a href="/servers/{{.ID}}">open</a></li>{{end}}</ul>` +
@@ -56,6 +63,14 @@ func (b *fakeBackend) VMInfo(ctx context.Context, name string) (virt.VM, error) 
 		}
 	}
 	return virt.VM{}, &vmNotFoundErr{name}
+}
+func (b *fakeBackend) DumpXML(ctx context.Context, name string) (string, error) {
+	for _, v := range b.vms {
+		if v.Name == name {
+			return "<domain type='kvm'><name>" + name + "</name></domain>", nil
+		}
+	}
+	return "", &vmNotFoundErr{name}
 }
 
 func (b *fakeBackend) Start(ctx context.Context, name string) error        { return nil }
@@ -235,6 +250,39 @@ func TestDefineVMForm(t *testing.T) {
 	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form2)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400", w.Code)
+	}
+}
+
+func TestVMPage(t *testing.T) {
+	ui, st := newTestUI(t)
+	srv := addServer(t, st)
+
+	// the page shows the VM's info and its XML.
+	w := doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/debian-dev")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", w.Code)
+	}
+	body := body(w)
+	for _, want := range []string{"debian-dev", "&lt;domain type=&#39;kvm&#39;&gt;", "&lt;name&gt;debian-dev&lt;/name&gt;", "id=\"vm-xml\""} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("page missing %q", want)
+		}
+	}
+	// actions + detail links are present
+	for _, want := range []string{"/vms/debian-dev/start", "/vms/debian-dev/console", "/vms/debian-dev/undefine"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("page missing link %q", want)
+		}
+	}
+
+	// unknown VM -> 404; unknown server -> 404.
+	w = doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/ghost")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown VM got %d, want 404", w.Code)
+	}
+	w = doGet(t, ui.Routes(), "/servers/nope/vms/debian-dev")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown server got %d, want 404", w.Code)
 	}
 }
 
