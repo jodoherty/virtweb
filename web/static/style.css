@@ -127,3 +127,6 @@ td.actions > * { margin-right: 0.3rem; }
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+
+/* console/vnc/spice status when something went wrong */
+.status-err { color: var(--danger); }

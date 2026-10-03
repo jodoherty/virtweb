@@ -6,6 +6,7 @@
   <a href="/servers/{{.Server.ID}}">Start it</a> to attach to the serial console.</div>
 {{else}}
 <p id="console-status" class="muted">Connecting…</p>
+<button id="console-reconnect" hidden>Reconnect</button>
 <div id="term" class="console-term"></div>
 <link rel="stylesheet" href="/xtermjs/css/xterm.css">
 <script src="/xtermjs/lib/xterm.js"></script>

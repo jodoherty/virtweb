@@ -194,6 +194,8 @@ test('console page: DuplexChannel drives xterm', async ({ page }) => {
     };
   });
   expect(probe).toEqual({ state: 'open', readable: true, writable: true });
+  // A live session hides the Reconnect affordance.
+  await expect(page.locator('#console-reconnect')).toBeHidden();
 
   // Drive the transport directly (bypassing the keyboard): a write on
   // the channel must reach the stub console and echo back into xterm.
@@ -205,6 +207,29 @@ test('console page: DuplexChannel drives xterm', async ({ page }) => {
     return lines.some((l) => l.includes('hostname'));
   });
   await page.close();
+});
+
+test('console page: clean session end shows Reconnect', async ({ page }) => {
+  // The console-drop scenario serves the banner then ends the stream
+  // (a clean server-side EOF, as when the VM's console detaches). The
+  // page must read that as "Session ended." and offer Reconnect.
+  const inst = await startStub({ scenario: 'console-drop' });
+  try {
+    const api2 = new Api(inst.url);
+    await api2.action(inst.serverId, 'debian-dev', 'start');
+    await waitFor(async () => {
+      const vms = await api2.listVMs(inst.serverId);
+      return vms.find((v) => v.name === 'debian-dev')?.state === 'running';
+    });
+    await page.goto(`${inst.url}/servers/${inst.serverId}/vms/debian-dev/console`);
+    await expect(page.locator('#console-status')).toContainText('Session ended.', {
+      timeout: 15_000,
+    });
+    await expect(page.locator('#console-reconnect')).toBeVisible();
+  } finally {
+    await page.close();
+    await inst.close();
+  }
 });
 
 test('vnc page: noVNC over the tunnel (transport smoke)', async ({ page }) => {

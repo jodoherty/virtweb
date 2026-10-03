@@ -39,17 +39,24 @@ export class DuplexChannel {
    * @param {string} streamUrl GET endpoint returning the downlink bytes
    * @param {string} inputUrl  POST endpoint accepting uplink byte bodies
    */
-  constructor(streamUrl, inputUrl) {
+  constructor(streamUrl, inputUrl, options = {}) {
     if (!streamUrl) throw new Error('DuplexChannel: streamUrl required');
     if (!inputUrl) throw new Error('DuplexChannel: inputUrl required');
     this.streamUrl = streamUrl;
     this.inputUrl = inputUrl;
+    // connectTimeoutMs bounds how long open() may wait for the GET
+    // response headers before giving up (0 disables the bound).
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 20_000;
 
     this._ctrl = null;
     this._opened = false;
     this._closed = false; // terminal: no more sends or reads
+    this._reason = ''; // terminal closeReason: '' | 'ended' | 'error' | 'closed'
     this._sid = null; // server-assigned session id (X-Tunnel-Id), if any
     this._openP = null;
+    this._openTimer = null;
+    this._openResolve = null;
+    this._openReject = null;
 
     // Uplink: chunks waiting for open, plus the serialized POST chain
     // (head-of-line ordering; see file comment).
@@ -80,6 +87,13 @@ export class DuplexChannel {
     return this._opened ? 'open' : 'connecting';
   }
 
+  // '' while open; 'ended' (clean server EOF), 'error' (the channel
+  // failed) or 'closed' (the client closed it) once terminal. The UI
+  // uses this to tell "session ended" from "connection lost".
+  get closeReason() {
+    return this._reason;
+  }
+
   /**
    * Starts the downlink GET. Resolves when the response headers arrive
    * (session live server-side, uplink POSTs accepted). The server may
@@ -92,35 +106,51 @@ export class DuplexChannel {
   open() {
     if (this._openP) return this._openP;
     this._openP = new Promise((resolve, reject) => {
+      this._openResolve = resolve;
+      this._openReject = reject;
       this._ctrl = new AbortController();
+      if (this.connectTimeoutMs > 0) {
+        // Give up if the session headers never arrive (server accepted
+        // the connection but the tunnel/session never came up).
+        this._openTimer = setTimeout(() => {
+          if (this._opened || this._closed) return;
+          const err = new Error('connection timed out');
+          err.code = 'timeout';
+          this._fail(err);
+          reject(err);
+        }, this.connectTimeoutMs);
+      }
       fetch(this.streamUrl, { signal: this._ctrl.signal })
-        .then((res) => this._onHeaders(res, resolve, reject))
+        .then((res) => this._onHeaders(res))
         .catch((err) => {
           if (!this._opened && !this._closed) this._fail(err);
           reject(err);
         });
     });
+    this._openP.finally(() => {
+      if (this._openTimer) clearTimeout(this._openTimer);
+    });
     return this._openP;
   }
 
-  async _onHeaders(res, resolve, reject) {
+  async _onHeaders(res) {
     // The session handle for uplink POSTs, if the endpoint provides one.
     this._sid = res.headers.get('x-tunnel-id');
     if (res.status === 409) {
       const err = new Error('a session is already open');
       err.code = 'conflict';
       await res.body?.cancel().catch(() => {});
-      reject(err);
+      this._openReject(err);
       return;
     }
     if (!res.ok || !res.body) {
       const err = new Error('HTTP ' + res.status + ' opening stream');
       await res.body?.cancel().catch(() => {});
-      reject(err);
+      this._openReject(err);
       return;
     }
     this._opened = true;
-    resolve();
+    this._openResolve();
     this._flushPending();
     this._pumpDownlink(res.body);
   }
@@ -135,7 +165,10 @@ export class DuplexChannel {
           if (done) break;
           this._sink.enqueue(value);
         }
-        if (!this._closed) this._sink.close();
+        if (!this._closed) {
+          this._reason = 'ended';
+          this._sink.close();
+        }
       } catch (err) {
         this._fail(err);
         return;
@@ -201,6 +234,7 @@ export class DuplexChannel {
   close() {
     if (this._closed) return;
     this._closed = true;
+    this._reason = 'closed';
     this._abortGet();
     this._doneRes(undefined);
   }
@@ -208,6 +242,7 @@ export class DuplexChannel {
   _fail(err) {
     if (this._closed) return;
     this._closed = true;
+    this._reason = 'error';
     try {
       if (!this._sink.closed) this._sink.error(err);
     } catch { /* sink already settled */ }

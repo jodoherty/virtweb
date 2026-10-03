@@ -31,8 +31,22 @@ term.focus();
 // drives the transport through __duplex).
 window.__term = term;
 
-const ch = new DuplexChannel(cfg.streamUrl, cfg.inputUrl);
+const ch = new DuplexChannel(cfg.streamUrl, cfg.inputUrl, {
+  // The server holds the connection while it sets up the remote ssh
+  // session; bound it so a wedged server can't leave "Connecting…" up
+  // forever.
+  connectTimeoutMs: 20_000,
+});
 window.__duplex = ch;
+
+// Reconnect affordance, shown once the session is no longer live.
+const reconnectBtn = document.getElementById('console-reconnect');
+if (reconnectBtn) reconnectBtn.addEventListener('click', () => location.reload());
+function setStatus(msg, { failed = false, reconnect = false } = {}) {
+  statusEl.textContent = msg;
+  statusEl.classList.toggle('status-err', failed);
+  if (reconnectBtn) reconnectBtn.hidden = !reconnect;
+}
 
 const encoder = new TextEncoder();
 term.onData((data) => {
@@ -43,17 +57,26 @@ term.onData((data) => {
   ch.write(bytes).catch(() => {});
 });
 
+let connected = false;
 try {
   await ch.open();
-  statusEl.textContent = 'Connected.';
+  connected = true;
+  setStatus('Connected.', { reconnect: false });
   const decoder = new TextDecoder();
   for await (const value of ch.readable) {
     term.write(decoder.decode(value, { stream: true }));
   }
   term.write(decoder.decode());
-  statusEl.textContent = 'Session ended.';
+  // Clean server-side EOF (VM stopped, console detached, …).
+  setStatus('Session ended.', { reconnect: true });
 } catch (err) {
-  statusEl.textContent = err.code === 'conflict'
-    ? 'A console session for this VM is already open.'
-    : 'Console error: ' + err.message;
+  if (err.code === 'conflict') {
+    setStatus('A console session for this VM is already open in another tab.', { reconnect: true });
+  } else if (err.code === 'timeout') {
+    setStatus('Connection timed out — the server did not open the console in time.', { failed: true, reconnect: true });
+  } else if (connected) {
+    setStatus('Connection lost — the session was dropped mid-stream.', { failed: true, reconnect: true });
+  } else {
+    setStatus('Could not connect: ' + err.message, { failed: true, reconnect: true });
+  }
 }
