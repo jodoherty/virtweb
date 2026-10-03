@@ -37,17 +37,27 @@ type Std struct {
 	SSHPath string
 	// ExtraOpts are additional -o options, e.g. for testing.
 	ExtraOpts []string
+	// StrictHostKeyChecking is the value for -o StrictHostKeyChecking=;
+	// "accept-new" when empty (trust first contact, verify thereafter).
+	StrictHostKeyChecking string
 }
 
 // baseOpts are the options used for every connection.
 //
 // BatchMode=yes disables interactive password/prompt auth (we assume
-// key-based auth); StrictHostKeyChecking=accept-new (OpenSSH >= 7.x)
-// automatically accepts new host keys but still verifies known ones.
+// key-based auth); StrictHostKeyChecking defaults to accept-new
+// (OpenSSH >= 7.x), which automatically accepts new host keys but still
+// verifies known ones. Operators on untrusted paths to a host can pick
+// a stricter value (e.g. "no" with a seeded known_hosts); see the
+// -host-key-checking flag.
 func (s *Std) baseOpts(port int) []string {
+	hostKey := s.StrictHostKeyChecking
+	if hostKey == "" {
+		hostKey = "accept-new"
+	}
 	opts := []string{
 		"BatchMode=yes",
-		"StrictHostKeyChecking=accept-new",
+		"StrictHostKeyChecking=" + hostKey,
 		"ConnectTimeout=10",
 	}
 	opts = append(opts, s.ExtraOpts...)

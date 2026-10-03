@@ -14,9 +14,11 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,5 +241,100 @@ func TestMtlsProxyPipeline(t *testing.T) {
 	}
 	if peerCN != "virtweb-test-client" {
 		t.Errorf("server saw client cert CN %q", peerCN)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	h := securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	res, err := http.Get(tsURL(t, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	want := map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
+	}
+	for k, v := range want {
+		if got := res.Header.Get(k); got != v {
+			t.Errorf("header %s = %q, want %q", k, got, v)
+		}
+	}
+	if csp := res.Header.Get("Content-Security-Policy"); csp == "" {
+		t.Error("missing Content-Security-Policy header")
+	} else {
+		for _, frag := range []string{"default-src 'self'", "frame-ancestors 'none'"} {
+			if !strings.Contains(csp, frag) {
+				t.Errorf("CSP %q missing fragment %q", csp, frag)
+			}
+		}
+	}
+}
+
+// tsURL serves h on a throwaway server and returns its base URL.
+func tsURL(t *testing.T, h http.Handler) string {
+	t.Helper()
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+	return ts.URL
+}
+
+// TestCrossOriginProtection verifies the CSRF guard wired into main:
+// non-safe cross-origin browser requests are rejected, same-origin and
+// non-browser requests pass, and safe methods are always allowed.
+func TestCrossOriginProtection(t *testing.T) {
+	cop := http.NewCrossOriginProtection()
+	var served bool
+	h := cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	do := func(method, origin, sfs string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, ts.URL+"/x", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if sfs != "" {
+			req.Header.Set("Sec-Fetch-Site", sfs)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+
+	// Cross-origin browser POST -> 403, and the handler never runs.
+	if code := do("POST", "https://evil.example", "cross-site"); code != http.StatusForbidden {
+		t.Errorf("cross-origin POST status = %d, want 403", code)
+	}
+	if served {
+		t.Error("handler served a cross-origin POST; it must be rejected")
+	}
+
+	// Same-origin browser POST -> allowed.
+	if code := do("POST", ts.URL, "same-origin"); code != http.StatusOK {
+		t.Errorf("same-origin POST status = %d, want 200", code)
+	}
+
+	// Non-browser client (no Sec-Fetch-Site/Origin) -> allowed.
+	if code := do("POST", "", ""); code != http.StatusOK {
+		t.Errorf("headerless POST status = %d, want 200", code)
+	}
+
+	// Safe methods are always allowed, even cross-origin.
+	if code := do("GET", "https://evil.example", "cross-site"); code != http.StatusOK {
+		t.Errorf("cross-origin GET status = %d, want 200", code)
 	}
 }

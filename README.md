@@ -70,12 +70,43 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o virtweb-linux-amd64 .
 | `-client-ca` | — | PEM CA bundle; with `-tls` enables **mTLS** (clients must present a cert signed by it) |
 | `-proxy-protocol` | off | expect a PROXY protocol (v1/v2) header on each connection |
 | `-proxy-from` | — | with `-proxy-protocol`: comma-separated proxy source IPs/CIDRs; any other source is rejected |
+| `-host-key-checking` | `accept-new` | ssh `StrictHostKeyChecking`: `accept-new` (trust first contact, verify afterwards), `yes`, `no` (known_hosts only), or `off` |
 
 The server binds to `127.0.0.1` by default. To use it from another
 machine, run it behind a reverse proxy (or listen on a non-loopback
 addr) — the console/VNC/SPICE streams must reach the browser
 **unbuffered**; see "Reverse proxy notes" and "TLS / mTLS / PROXY
 protocol" below.
+
+## Security
+
+virtweb is designed to run **behind an mTLS reverse proxy** (see the
+previous section); with client-cert auth at the edge, the protections
+below address what an *authenticated* client can do:
+
+- **Cross-origin protection (CSRF)** — every response goes through
+  Go's `net/http.CrossOriginProtection`: non-safe (POST/DELETE/…) 
+  cross-origin *browser* requests are rejected (403) via the
+  `Sec-Fetch-Site`/`Origin` headers. Same-origin pages and non-browser
+  clients (curl, node, API automation) are unaffected.
+- **Display tunnels are server-resolved** — the client names which
+  display to view (`?display=vnc|spice`); no client-supplied `host:port`
+  is accepted, so the tunnel cannot be pointed at arbitrary services
+  from the remote host (SSRF).
+- **Session caps** — at most 64 live console sessions and 64 live
+  tunnel sessions (each holds a remote ssh process); further opens get
+  429.
+- **Per-host ssh concurrency cap** — at most 8 concurrent ssh
+  invocations per managed host (bounds the `virsh list` fan-out).
+- **Request body caps** — console input 64 KiB, tunnel input 512 KiB,
+  JSON server-add 1 MiB.
+- **Response hardening** — `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` (server ids
+  live in URL paths), and a strict CSP (`script-src 'self'`; no inline
+  scripts — confirm dialogs use `data-confirm` + `web/static/ui.js`).
+- **SSH host-key policy** — `-host-key-checking` (default `accept-new`,
+  i.e. trust-first-contact); use `no` with a seeded `known_hosts` on
+  untrusted paths to a host.
 
 ## TLS, mTLS, and the PROXY protocol (reverse-proxy deployment)
 

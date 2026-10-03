@@ -29,6 +29,11 @@ const actionTimeout = 90 * time.Second
 type Backend struct {
 	srv virt.Server
 	run sshexec.Runner
+	// sem bounds the number of concurrent ssh invocations for this
+	// host. ListVMs fans out one vMInfo (several ssh calls) per VM, so
+	// without the bound a host with many VMs would spawn an unbounded
+	// burst of ssh processes per page load.
+	sem chan struct{}
 }
 
 // New creates a Backend for srv using run for SSH access.
@@ -36,7 +41,7 @@ func New(srv virt.Server, run sshexec.Runner) *Backend {
 	if run == nil {
 		run = &sshexec.Std{}
 	}
-	return &Backend{srv: srv, run: run}
+	return &Backend{srv: srv, run: run, sem: make(chan struct{}, 8)}
 }
 
 // virsh builds and executes `virsh -c <uri> args...` on the remote
@@ -46,8 +51,16 @@ func (b *Backend) virsh(ctx context.Context, args ...string) (string, error) {
 }
 
 // virshWith is the shared implementation; callers pick the bound that
-// fits the operation (reads vs blocking lifecycle actions).
+// fits the operation (reads vs blocking lifecycle actions). At most
+// len(sem) ssh processes run for this host at once.
 func (b *Backend) virshWith(ctx context.Context, timeout time.Duration, args ...string) (string, error) {
+	select {
+	case b.sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-b.sem }()
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := []string{"virsh", shellQuote("-c"), shellQuote(b.srv.URI)}

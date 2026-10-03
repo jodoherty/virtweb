@@ -147,3 +147,27 @@ func TestFilterStderr(t *testing.T) {
 		t.Fatalf("all-noise stderr = %q, want empty", got)
 	}
 }
+
+// TestStdHostKeyChecking: the StrictHostKeyChecking option defaults to
+// accept-new and is operator-overridable (TOFU opt-out).
+func TestStdHostKeyChecking(t *testing.T) {
+	runWith := func(sk string) string {
+		t.Helper()
+		script := fakeSSH(t, filepath.Join(t.TempDir(), "args"))
+		ssh := &Std{SSHPath: script, StrictHostKeyChecking: sk}
+		out, err := ssh.Run(context.Background(), "bob", "example.com", 0, "true")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// default: accept-new
+	if out := runWith(""); !strings.Contains(out, "StrictHostKeyChecking=accept-new") {
+		t.Fatalf("default args missing accept-new: %q", out)
+	}
+	// operator override
+	if out := runWith("no"); !strings.Contains(out, "StrictHostKeyChecking=no") {
+		t.Fatalf("override not passed through: %q", out)
+	}
+}

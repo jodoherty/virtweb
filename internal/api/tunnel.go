@@ -108,6 +108,12 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 	sid := newTunnelID()
 	s := newPipeSession()
 	a.tunMu.Lock()
+	if len(a.tunnels) >= a.maxTunnels {
+		a.tunMu.Unlock()
+		writeErr(w, http.StatusTooManyRequests,
+			"too many tunnel sessions open (limit %d); try again shortly", a.maxTunnels)
+		return
+	}
 	a.tunnels[sid] = s
 	a.tunMu.Unlock()
 	defer a.dropTunnel(sid)

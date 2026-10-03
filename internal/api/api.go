@@ -30,6 +30,10 @@ type API struct {
 	consoles  map[string]*pipeSession
 	tunMu     sync.Mutex
 	tunnels   map[string]*pipeSession
+	// maxConsoles/maxTunnels bound live byte-stream sessions (a DoS
+	// cap: each session holds a remote ssh process). 429 when reached.
+	maxConsoles int
+	maxTunnels  int
 }
 
 // New builds an API over the given store and factory.
@@ -37,7 +41,9 @@ func New(st *store.Store, factory BackendFactory) *API {
 	return &API{st: st, factory: factory,
 		backends: map[string]virt.Backend{},
 		consoles: map[string]*pipeSession{},
-		tunnels:  map[string]*pipeSession{}}
+		tunnels:  map[string]*pipeSession{},
+		maxConsoles: 64,
+		maxTunnels:  64}
 }
 
 // backend returns the cached backend for a server id.
@@ -80,6 +86,9 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleAddServer(w http.ResponseWriter, r *http.Request) {
+	// A server definition is a few short fields; cap the body so a
+	// hostile client cannot pin memory with a giant JSON payload.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var srv virt.Server
 	if err := json.NewDecoder(r.Body).Decode(&srv); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON: %v", err)

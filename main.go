@@ -65,6 +65,7 @@ func main() {
 	clientCA := flag.String("client-ca", "", "PEM CA bundle; requires -tls and enables mTLS (client certificates are required and verified)")
 	proxyProto := flag.Bool("proxy-protocol", false, "expect a PROXY protocol (v1/v2) header on each connection, e.g. behind a Traefik L4 pass-through router")
 	proxyFrom := flag.String("proxy-from", "", "with -proxy-protocol: comma-separated source IPs/CIDRs of the proxy; connections from any other source are rejected")
+	hostKeyChecking := flag.String("host-key-checking", "accept-new", "ssh -o StrictHostKeyChecking value: accept-new (default: trust first contact, verify afterwards), yes, no (known_hosts only), or off")
 	flag.Parse()
 
 	if *showVersion {
@@ -81,6 +82,11 @@ func main() {
 	if *proxyProto && *proxyFrom == "" {
 		log.Fatal("-proxy-protocol requires -proxy-from (the proxy's source IP/CIDR); without it, any peer on the network could forge the PROXY header")
 	}
+	switch *hostKeyChecking {
+	case "accept-new", "yes", "no", "off":
+	default:
+		log.Fatalf("-host-key-checking must be one of: accept-new, yes, no, off (got %q)", *hostKeyChecking)
+	}
 
 	// Frontend is served straight from the embedded filesystem.
 	webRoot, err := fs.Sub(webFS, "web")
@@ -96,7 +102,7 @@ func main() {
 	var factory api.BackendFactory
 	switch *backendKind {
 	case "ssh":
-		factory = &backendFactory{ssh: &sshexec.Std{}}
+		factory = &backendFactory{ssh: &sshexec.Std{StrictHostKeyChecking: *hostKeyChecking}}
 	case "stub":
 		sc, err := stub.ParseScenario(os.Getenv("STUB_SCENARIO"))
 		if err != nil {
@@ -125,9 +131,17 @@ func main() {
 		}
 		mux.Handle(prefix, http.StripPrefix(prefix, http.FileServerFS(sub)))
 	}
+
+	// Cross-origin protection (CSRF): non-safe (POST/DELETE/PUT/...) 
+	// cross-origin browser requests are rejected (Sec-Fetch-Site / 
+	// Origin check, stdlib net/http). Safe methods are always allowed, 
+	// and non-browser clients (curl, node, API automation) send none of
+	// those headers, so they pass.
+	cop := http.NewCrossOriginProtection()
+
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           securityHeaders(cop.Handler(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -178,6 +192,28 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// securityHeaders adds the response hardening headers virtweb wants on
+// every response:
+//   nosniff:        browsers must not re-sniff content types
+//   X-Frame-Options + CSP frame-ancestors: never framed (clickjacking)
+//   Referrer-Policy: server ids live in URL paths — never leak them
+//   CSP: all scripts/styles are same-origin files; the page uses no
+//        inline scripts (data-confirm + ui.js instead of onsubmit) and
+//        no eval; img-src allows data:/blob: for the VNC/SPICE viewers'
+//        cursor and playback images.
+func securityHeaders(next http.Handler) http.Handler {
+	csp := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; " +
+		"base-uri 'self'; frame-ancestors 'none'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", csp)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // tlsConfigFromFiles builds the server TLS config. When caFile is

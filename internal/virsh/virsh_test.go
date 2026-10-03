@@ -8,31 +8,46 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jodoherty/virtweb/internal/virt"
 )
 
 type fakeRunner struct {
-	mu    sync.Mutex
+	mu     sync.Mutex
 	commands []string
 	// respond returns canned stdout for a command (may be nil); if fn is set
 	// it is used instead.
 	responses map[string]string
 	fail      map[string]error
 	fn        func(cmd string) (string, error)
+	// concurrent/peak track the maximum number of in-flight Run calls
+	// (used by the ListVMs fan-out bound test).
+	concurrent int
+	peak       int
 }
 
 func (f *fakeRunner) Run(_ context.Context, _, _ string, _ int, command string) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.commands = append(f.commands, command)
-	if f.fn != nil {
-		return f.fn(command)
+	f.concurrent++
+	if f.concurrent > f.peak {
+		f.peak = f.concurrent
 	}
-	if err, ok := f.fail[command]; ok {
+	f.commands = append(f.commands, command)
+	fn, fail, responses := f.fn, f.fail, f.responses
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.concurrent--
+		f.mu.Unlock()
+	}()
+	if fn != nil {
+		return fn(command)
+	}
+	if err, ok := fail[command]; ok {
 		return "", err
 	}
-	if out, ok := f.responses[command]; ok {
+	if out, ok := responses[command]; ok {
 		return out, nil
 	}
 	return "", fmt.Errorf("virsh: command not understood: %s", command)
@@ -323,5 +338,41 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestListVMsConcurrencyBound: ListVMs fans out one vMInfo (several ssh
+// calls) per VM; the per-host semaphore must keep the peak number of
+// concurrent ssh invocations bounded even with many VMs.
+func TestListVMsConcurrencyBound(t *testing.T) {
+	const nVMs = 12
+	listOut := " Id   Name                    State\n" +
+		"-----------------------------------------\n"
+	for i := 0; i < nVMs; i++ {
+		listOut += fmt.Sprintf(" *    vm-%-20d running\n", i)
+	}
+	run := &fakeRunner{}
+	run.fn = func(cmd string) (string, error) {
+		time.Sleep(20 * time.Millisecond)
+		if strings.Contains(cmd, "list --all") {
+			return listOut, nil
+		}
+		return "", errors.New("no detail")
+	}
+	b := New(virt.Server{Host: "h", URI: "qemu:///system"}, run)
+	vms, err := b.ListVMs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vms) != nVMs {
+		t.Fatalf("got %d vms, want %d", len(vms), nVMs)
+	}
+	// Without the bound the 12 VMs' parallel dominfo/domifaddr/
+	// domdisplay calls would reach ~36 concurrent ssh invocations.
+	if run.peak > 8 {
+		t.Errorf("peak concurrent ssh = %d, want <= 8", run.peak)
+	}
+	if run.peak < 2 {
+		t.Errorf("peak concurrent ssh = %d, want >= 2 (fan-out should still overlap)", run.peak)
 	}
 }

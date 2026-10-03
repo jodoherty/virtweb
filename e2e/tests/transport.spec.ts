@@ -145,6 +145,32 @@ test('client disconnect kills the session; input after close -> 404', async () =
   expect(await s.input('x')).toBe(404);
 });
 
+test('cross-origin state-changing request -> 403 (CSRF protection)', async () => {
+  // The server rejects non-safe cross-origin browser requests
+  // (Sec-Fetch-Site/Origin, stdlib CrossOriginProtection); a
+  // non-browser client (no such headers) is unaffected.
+  const cross = await fetch(`${url()}/api/servers`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'https://evil.example',
+      'Sec-Fetch-Site': 'cross-site',
+    },
+    body: JSON.stringify({ name: 'csrf', user: 'u', host: 'h' }),
+  });
+  expect(cross.status).toBe(403);
+  await cross.body?.cancel();
+
+  const plain = await fetch(`${url()}/api/servers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'csrf', user: 'u', host: 'h' }),
+  });
+  expect(plain.status).toBe(201);
+  const created = await plain.json();
+  await api.deleteServer(created.id);
+});
+
 /* ---------- STUB_SCENARIO error paths (disposable instances) ---------- */
 
 test('scenario tunnel-drop: stream dies after the banner', async () => {

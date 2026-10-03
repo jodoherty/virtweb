@@ -16,7 +16,7 @@
       <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/start"><button>Start</button></form>
       <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/shutdown"><button>Shutdown</button></form>
       <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/destroy"
-            onsubmit="return confirm('Destroy {{.Name}} now?')"><button class="danger">Destroy</button></form>
+            data-confirm="Destroy {{.Name}} now?"><button class="danger">Destroy</button></form>
       <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/reboot"><button>Reboot</button></form>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">Console</a>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/vnc">VNC</a>

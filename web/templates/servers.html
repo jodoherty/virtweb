@@ -9,7 +9,7 @@
     <td class="muted">{{.URI}}</td>
     <td class="actions">
       <form method="post" action="/servers/{{.ID}}/remove"
-            onsubmit="return confirm('Remove server {{.Name}}?')">
+            data-confirm="Remove server {{.Name}}?">
         <button class="danger">Remove</button>
       </form>
     </td>

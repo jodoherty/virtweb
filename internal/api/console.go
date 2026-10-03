@@ -91,6 +91,12 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "console for %q is already open", name)
 		return
 	}
+	if len(a.consoles) >= a.maxConsoles {
+		a.conMu.Unlock()
+		writeErr(w, http.StatusTooManyRequests,
+			"too many console sessions open (limit %d); try again shortly", a.maxConsoles)
+		return
+	}
 	s := newPipeSession()
 	a.consoles[key] = s
 	a.conMu.Unlock()
