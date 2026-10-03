@@ -12,7 +12,7 @@ never opens a direct socket to a hypervisor.
 - View and manage virtual machines: start, shutdown, reboot, destroy
 - Use a VM:
   - **serial console** (xterm.js) over the HTTP stream transport
-  - **VNC** (noVNC, unmodified) over the same transport
+  - **VNC** (noVNC fork) over the same transport
   - **SPICE** (spice-html5 fork) over the same transport
 - No WebSocket anywhere: the transport is a chunked, flushed GET (browser
   `ReadableStream`) for server→client bytes plus small, ordered POSTs for
@@ -212,7 +212,8 @@ internal/store             JSON-file server store (atomic, concurrency-safe)
 internal/api               REST + console/tunnel stream & input handlers
 internal/webui             server-rendered HTML pages
 web/                       embedded frontend (templates/ + static/)
-third-party/               vendored: novnc, xtermjs, spice-html5-fork
+third-party/               first-party forks: novnc, xtermjs,
+                               spice-html5-fork (PROVENANCE.md each)
 e2e/                       Playwright e2e suite (stub + libvirt tiers)
 ```
 

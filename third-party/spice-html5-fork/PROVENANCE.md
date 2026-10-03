@@ -43,3 +43,41 @@ wire reader, protocol code) is byte-identical to the upstream base.
 Do **not** edit vendored files in place except through commits that
 are recognizably part of the fork delta; `git log -- third-party/spice-html5-fork`
 is the delta's record.
+
+## Audit notes (2026-10-03, virtweb security review)
+
+Audited as first-party code (fork delta + the upstream protocol
+path). Trust boundary: a hostile SPICE server (compromised
+guest/QEMU) feeds untrusted protocol bytes; `wire.js` reassembles
+them, `spicemsg.js` decodes them. Findings:
+
+**Safe (verified):**
+- Fork delta adds no new attack surface: `SpiceStream` is a
+  WebSocket-shaped byte channel; `send_msg` coalesces per animation
+  tick (order preserved, uplink stays a trickle of small POSTs);
+  `cleanup`/`handle_timeout` discard pending frames and actually
+  close the stream (no zombie sessions).
+- `wire.js` `inbound()` is a correct streaming accumulator: it
+  buffers partial blocks and slices exactly `needed` bytes, so
+  arbitrary chunk splits from `DuplexChannel` are safe (slices copy,
+  no aliasing).
+- Server data reaches only canvas drawing (`display.js`, `bitmap.js`);
+  logs use `document.createTextNode` (no `innerHTML`).
+- Malformed-message handling is contained: `process_message` wraps the
+  channel dispatch in try/catch so one bad message can't desync the
+  wire reader.
+- RSA ticket (`ticket.js`): the server-supplied public key is parsed
+  from a fixed 512-byte field with an explicit "keys > 255 bytes
+  unsupported" bound, so a hostile server cannot force a huge
+  modulus/exponent into the jsbn/bigint math; `OAEP` padding checks
+  `padlen` before allocating.
+- `SpiceMsgChannels` caps parsing reads `num_of_channels` from the
+  message but only reads as many `SpiceChannelId`s as the buffer
+  actually contains (`from_dv` advances `at` and the DataView bounds
+  the reads) — a hostile `num_of_channels` cannot over-allocate.
+
+**Accepted residuals (hostile-*server* DoS class, no RCE):**
+- A hostile server can still stream large display/cursor/pixmap
+  payloads that the wire reader buffers before decoding (bounded by
+  the browser's memory, not by the protocol); QEMU sends real
+  payloads. `DEBUG` is 0 in the vendored tree.

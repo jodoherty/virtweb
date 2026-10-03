@@ -1,4 +1,4 @@
-// Serial console: xterm.js 6.0.0 (vendored, third-party/xtermjs, MIT)
+// Serial console: xterm.js 6.0.0 fork (third-party/xtermjs, MIT)
 // over DuplexChannel (web/static/duplex.js): one GET stream for the
 // downlink, ordered POSTs for the uplink. No WebSocket.
 // One console session per (server, VM); a concurrent open gets 409.

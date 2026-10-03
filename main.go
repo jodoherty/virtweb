@@ -30,9 +30,9 @@ import (
 //go:embed web
 var webFS embed.FS
 
-// Vendored (see third-party/*/PROVENANCE.md):
+// First-party forks (see third-party/*/PROVENANCE.md):
 //   xterm.js 6.0.0 + addon-fit 0.11.0 (MIT)               -> serial console
-//   noVNC 1.7.0 (MPL-2.0), unmodified                     -> VNC viewer
+//   noVNC 1.7.0 (MPL-2.0) fork                            -> VNC viewer
 //   spice-html5 fork (LGPL-3.0), transport forked by us   -> SPICE viewer
 //
 //go:embed third-party/xtermjs

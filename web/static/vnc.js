@@ -1,8 +1,9 @@
-// VNC viewer: noVNC 1.7.0 (vendored, third-party/novnc, unmodified,
+// VNC viewer: noVNC 1.7.0 fork (third-party/novnc; see its
 // MPL-2.0) over the plain-HTTP tunnel endpoints — no websockify.
 //
-// noVNC needs no fork for this: its transport layer (core/websock.js)
-// accepts any "raw channel" object via Websock.attach(), requiring an
+// The transport swap lives here, not in the fork: noVNC's transport
+// layer (core/websock.js) accepts any "raw channel" object via
+// Websock.attach(), requiring an
 // 8-property surface (send, close, binaryType, onerror, onmessage,
 // onopen, protocol, readyState) — WebSocket and RTCDataChannel are the
 // two reference examples. ChannelSocket below provides that surface
