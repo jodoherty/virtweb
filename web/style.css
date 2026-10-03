@@ -1,0 +1,84 @@
+:root {
+  --bg: #111418;
+  --panel: #1a1f26;
+  --border: #2c333d;
+  --fg: #d8dee7;
+  --muted: #7b8694;
+  --accent: #4da3ff;
+  --danger: #e05252;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+header h1 { margin: 0; font-size: 1.3rem; }
+header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.9rem; }
+
+main { padding: 1.5rem; max-width: 1000px; margin: 0 auto; }
+
+h2 { font-size: 1.1rem; margin-top: 1.5rem; }
+
+button, .btn {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-decoration: none;
+  display: inline-block;
+}
+button:hover, .btn:hover { border-color: var(--accent); }
+button.danger, .btn.danger { color: var(--danger); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.server-list { list-style: none; padding: 0; }
+.server-list li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.server-link { color: var(--fg); text-decoration: none; flex: 1; }
+.server-link:hover { color: var(--accent); }
+.status { color: var(--muted); font-size: 0.85rem; }
+
+.add-server { margin-top: 1.5rem; }
+.add-server .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.add-server input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  flex: 1;
+  min-width: 120px;
+}
+.add-server button[type=submit] { margin-top: 0.5rem; }
+
+table.vm-table { width: 100%; border-collapse: collapse; }
+.vm-table th, .vm-table td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.vm-table th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+.vm-table td.actions { white-space: nowrap; }
+.vm-table td.actions button, .vm-table td.actions .btn { margin-right: 0.3rem; }
+tr.running td:first-child::before { content: '● '; color: #4caf50; }
+tr.stopped td:first-child::before { content: '○ '; color: var(--muted); }
+
+.muted { color: var(--muted); }
