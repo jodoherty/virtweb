@@ -1,0 +1,52 @@
+<domain type='qemu'>
+  <name>vw-e2e-guest</name>
+  <memory unit='MiB'>1024</memory>
+  <currentMemory unit='MiB'>1024</currentMemory>
+  <vcpu placement='static'>1</vcpu>
+  <os>
+    <type arch='x86_64' machine='pc'>hvm</type>
+  </os>
+  <cpu mode='host-model'/>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <!-- Deterministic TCG: the rootless container cannot open
+         /dev/kvm (host-side permission check), and TCG keeps boot
+         timings stable. A fresh boot takes ~3-5 minutes. -->
+    <qemu:commandline>
+      <qemu:arg value='-accel'/>
+      <qemu:arg value='tcg'/>
+    </qemu:commandline>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/var/lib/libvirt/images/debian-13-genericcloud-amd64.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <!-- NoCloud config drive: root password + hostname (entrypoint).
+         IDE, not virtio — the virtio bus does not support ejectable
+         media. -->
+    <disk type='file' device='cdrom'>
+      <driver name='qemu'/>
+      <source file='/var/lib/libvirt/images/config-drive.iso'/>
+      <target dev='hdb' bus='ide'/>
+    </disk>
+    <serial type='pty'>
+      <target port='0'/>
+    </serial>
+    <console type='pty'>
+      <target port='0'/>
+    </console>
+    <!-- VNC on an autoport, loopback-only: exercises the same
+         loopback/autoport shape as the real fleet's SPICE (the VNC
+         port is only known via `virsh domdisplay` while running). -->
+    <graphics type='vnc' port='-1' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+    </graphics>
+    <interface type='network'>
+      <source network='default'/>
+      <model type='virtio'/>
+    </interface>
+    <rng model='virtio'>
+      <backend model='random'/>
+    </rng>
+  </devices>
+</domain>

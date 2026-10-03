@@ -61,14 +61,14 @@ export function waitForExit(pid, timeoutMs = 5000) {
 }
 
 // spawn starts virtweb detached, logging to logPath. Returns the pid.
-export function start({ port, scenario = '' }) {
+export function start({ port, scenario = '', backend = 'stub' }) {
   const logPath = path.join(ARTIFACTS, 'virtweb.log');
   const dataDir = path.join(ARTIFACTS, 'data');
   mkdirSync(dataDir, { recursive: true });
   const log = openSync(logPath, 'w');
   const child = spawn(
     BINARY,
-    ['-backend', 'stub', '-addr', `127.0.0.1:${port}`, '-data-dir', dataDir],
+    ['-backend', backend, '-addr', `127.0.0.1:${port}`, '-data-dir', dataDir],
     {
       env: { ...process.env, ...(scenario ? { STUB_SCENARIO: scenario } : {}) },
       stdio: ['ignore', log, log],

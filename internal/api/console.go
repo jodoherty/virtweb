@@ -142,6 +142,10 @@ func (a *API) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	case <-pumpDone:          // console output ended
 	}
 	s.close()
+	// The pump goroutine may still be inside Write/Flush; the response
+	// writer must not be used concurrently with the server finishing
+	// the response, so wait for it to fully drain before returning.
+	<-pumpDone
 }
 
 // handleConsoleInput writes one keystroke batch to an open console

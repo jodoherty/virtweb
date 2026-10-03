@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 // Runner executes commands on a remote host over SSH.
@@ -82,7 +83,7 @@ func (s *Std) Run(ctx context.Context, user, host string, port int, command stri
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := stderr.String()
+		msg := filterStderr(stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -124,6 +125,19 @@ func (s *Std) Tunnel(ctx context.Context, user, host string, port int, target st
 		}
 	}
 	return err
+}
+
+// filterStderr drops harmless locale noise ("setlocale: No such file or
+// directory") that some containers' login shells print on every remote
+// command, so it does not end up inside API error messages.
+func filterStderr(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "setlocale:") {
+			lines[i] = ""
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func trimTrailing(s string) string {

@@ -15,8 +15,15 @@ import (
 	"github.com/jodoherty/virtweb/internal/virt"
 )
 
-// callTimeout bounds each individual virsh invocation.
+// callTimeout bounds each individual virsh invocation. Reads (list,
+// dominfo, domifaddr, version) are fast and get this bound.
 const callTimeout = 30 * time.Second
+
+// actionTimeout bounds lifecycle actions (start, destroy, shutdown,
+// reboot). Those block until libvirt reports the domain reached the
+// target state, and on a slow emulator (TCG) or a dirty disk that can
+// take well over a minute — far longer than a read needs.
+const actionTimeout = 90 * time.Second
 
 // Backend is a virsh-over-SSH implementation of virt.Backend.
 type Backend struct {
@@ -32,9 +39,16 @@ func New(srv virt.Server, run sshexec.Runner) *Backend {
 	return &Backend{srv: srv, run: run}
 }
 
-// virsh builds and executes `virsh -c <uri> args...` on the remote host.
+// virsh builds and executes `virsh -c <uri> args...` on the remote
+// host within callTimeout.
 func (b *Backend) virsh(ctx context.Context, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	return b.virshWith(ctx, callTimeout, args...)
+}
+
+// virshWith is the shared implementation; callers pick the bound that
+// fits the operation (reads vs blocking lifecycle actions).
+func (b *Backend) virshWith(ctx context.Context, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := []string{"virsh", shellQuote("-c"), shellQuote(b.srv.URI)}
 	for _, a := range args {
@@ -106,30 +120,52 @@ func (b *Backend) vMInfo(ctx context.Context, name string) (virt.VM, error) {
 		}
 		vm.IP = parseDomIfAddr(out)
 	}()
+	// domdisplay results are collected in locals (not written to vm
+	// directly) so the goroutine does not race parseDomInfo's write to
+	// vm.VNCPort; they are applied after the join below.
+	var displayProto, displayAddr string
 	go func() {
 		defer wg.Done()
 		// domdisplay only works on running domains and returns the
 		// primary display address, e.g. "spice://127.0.0.1:5900" or
-		// "vnc://host:5900". SPICE ports are auto-assigned at boot,
-		// so this is the only way to learn the live one.
+		// "vnc://host:5900". Auto-ports are assigned at boot, so
+		// this is the main way to learn the live one.
 		out, err := b.virsh(ctx, "domdisplay", name)
 		if err != nil {
 			return // not fatal: no display / VM not running
 		}
-		if proto, addr := parseDomDisplay(out); proto == "spice" {
-			vm.SpiceAddr = addr
-		}
+		displayProto, displayAddr = parseDomDisplay(out)
 	}()
 	wg.Wait()
 	if infoErr != nil {
 		return vm, infoErr
 	}
 	_ = ipErr // missing IP info is not fatal
+	switch displayProto {
+	case "spice":
+		vm.SpiceAddr = displayAddr
+	case "vnc":
+		if _, port, ok := strings.Cut(displayAddr, ":"); ok {
+			if p, _ := strconv.Atoi(port); p > 0 {
+				vm.VNCPort = p
+			}
+		}
+		// With an auto-port display (port='-1') domdisplay reports the
+		// configured placeholder (0), not the assigned port: the live
+		// XML carries the real one.
+		if vm.VNCPort <= 0 && vm.Running {
+			if out, err := b.virsh(ctx, "dumpxml", name); err == nil {
+				if p := parseGraphicsPort(out); p > 0 {
+					vm.VNCPort = p
+				}
+			}
+		}
+	}
 	return vm, nil
 }
 
 func (b *Backend) act(ctx context.Context, action, name string) error {
-	_, err := b.virsh(ctx, action, name)
+	_, err := b.virshWith(ctx, actionTimeout, action, name)
 	return err
 }
 
@@ -243,6 +279,23 @@ func parseDomDisplay(out string) (string, string) {
 		rest = rest[:i]
 	}
 	return proto, rest
+}
+
+// parseGraphicsPort extracts the VNC port from live domain XML
+// (<graphics type='vnc' port='N' .../>); 0 if absent.
+func parseGraphicsPort(xml string) int {
+	for _, line := range strings.Split(xml, "\n") {
+		if !strings.Contains(line, "type='vnc'") {
+			continue
+		}
+		for _, f := range strings.Fields(line) {
+			if v, ok := strings.CutPrefix(f, "port='"); ok {
+				p, _ := strconv.Atoi(strings.TrimSuffix(v, "'"))
+				return p
+			}
+		}
+	}
+	return 0
 }
 
 func parseKiB(val string) (int, error) {

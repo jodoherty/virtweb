@@ -136,3 +136,14 @@ func TestStdTunnel(t *testing.T) {
 		t.Fatalf("stderr leaked into the data stream: %q", out.String())
 	}
 }
+
+func TestFilterStderr(t *testing.T) {
+	got := filterStderr("setlocale: No such file or directory\nerror: boom")
+	want := "error: boom"
+	if got != want {
+		t.Fatalf("filterStderr = %q, want %q", got, want)
+	}
+	if got := filterStderr("setlocale: No such file or directory"); got != "" {
+		t.Fatalf("all-noise stderr = %q, want empty", got)
+	}
+}

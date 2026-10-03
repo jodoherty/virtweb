@@ -1,0 +1,7 @@
+{
+  "name": "debian-13-genericcloud-amd64.qcow2",
+  "url": "http://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+  "sha512": "f46f0671a6e5bdec5291ab8972bae2f10e5408c2f64a74078f11efc2f06a436a9d0313ed50e0472542eeabf780e9f7c792ac0a314c6c20507fcd9fd81b468c3d",
+  "bytes": 341508096,
+  "notes": "Pinned 2026-10-03. The 'latest' symlink is stable between trixie point releases; re-pin (url/sha512) when the image changes. Guest is trixie regardless of the bookworm host base."
+}

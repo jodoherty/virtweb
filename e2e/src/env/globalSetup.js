@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 export default function globalSetup() {
   const e2e = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const r = spawnSync('node', ['src/cli/env.js', 'up', '--backend', 'stub'], {
+  const r = spawnSync('node', ['src/cli/env.js', 'up', '--backend', process.env.E2E_BACKEND ?? 'stub'], {
     cwd: e2e,
     stdio: 'inherit',
   });

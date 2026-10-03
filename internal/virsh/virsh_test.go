@@ -246,6 +246,71 @@ func TestParseDomDisplay(t *testing.T) {
 	}
 }
 
+func TestParseGraphicsPort(t *testing.T) {
+	xml := `<domain type='qemu'>
+  <devices>
+    <graphics type='vnc' port='5900' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+    </graphics>
+  </devices>
+</domain>`
+	if got := parseGraphicsPort(xml); got != 5900 {
+		t.Fatalf("parseGraphicsPort = %d, want 5900", got)
+	}
+	if got := parseGraphicsPort("<devices></devices>"); got != 0 {
+		t.Fatalf("no vnc: got %d, want 0", got)
+	}
+}
+
+func TestVMInfoVNCAutoPort(t *testing.T) {
+	// dominfo says running but carries no live port; domdisplay reports
+	// the auto-port placeholder (0); the live XML has the real port.
+	fr := &fakeRunner{
+		responses: map[string]string{
+			`virsh -c qemu:///system dominfo vgw`: ` Id:           7
+ Name:         vgw
+ UUID:         cafe-babe
+ CPU(s):       1
+ CPU time:     1.0s
+ Maximum memory: 1048576 KiB
+ Used memory:    1048576 KiB
+ State:         running
+`,
+			`virsh -c qemu:///system domifaddr vgw`:      "",
+			`virsh -c qemu:///system domdisplay vgw`:     "vnc://127.0.0.1:0",
+			`virsh -c qemu:///system dumpxml vgw`:       "<graphics type='vnc' port='5912' autoport='yes'/>",
+		},
+	}
+	b := New(virt.Server{Name: "t", User: "u", Host: "h", URI: "qemu:///system"}, fr)
+	vm, err := b.VMInfo(context.Background(), "vgw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.VNCPort != 5912 {
+		t.Fatalf("VNCPort = %d, want 5912", vm.VNCPort)
+	}
+}
+
+func TestVMInfoVNCFixedPort(t *testing.T) {
+	// dominfo carries the port directly; domdisplay confirms it; no
+	// dumpxml needed.
+	fr := &fakeRunner{
+		responses: map[string]string{
+			`virsh -c qemu:///system dominfo win11`:    domInfoWin11,
+			`virsh -c qemu:///system domifaddr win11`:  "",
+			`virsh -c qemu:///system domdisplay win11`: "vnc://192.168.1.10:5910",
+		},
+	}
+	b := New(virt.Server{Name: "t", User: "u", Host: "h", URI: "qemu:///system"}, fr)
+	vm, err := b.VMInfo(context.Background(), "win11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.VNCPort != 5910 {
+		t.Fatalf("VNCPort = %d, want 5910", vm.VNCPort)
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
 		"plain":             "plain",

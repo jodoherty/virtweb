@@ -25,6 +25,7 @@ import {
   waitReady,
 } from '../env/virtweb.js';
 import { Api } from '../api.js';
+import * as libvirt from '../env/libvirt.js';
 
 const [,, cmd, ...rest] = process.argv;
 const flags = new Set(rest.filter((a) => a.startsWith('--')));
@@ -33,14 +34,12 @@ const flagVal = (name) => {
   return i >= 0 ? rest[i + 1] : undefined;
 };
 
-const SERVER_FIELDS = { name: 'e2e', user: 'stub', host: 'stub-host' };
-
-async function registerServer(url) {
+async function registerServer(url, fields) {
   const api = new Api(url);
   const servers = await api.listServers();
-  const existing = servers.find((s) => s.name === SERVER_FIELDS.name);
+  const existing = servers.find((s) => s.name === fields.name);
   if (existing) return existing.id;
-  const created = await api.addServer(SERVER_FIELDS);
+  const created = await api.addServer(fields);
   return created.id;
 }
 
@@ -54,15 +53,12 @@ function manifestLive(m) {
 
 async function cmdUp() {
   const backend = flagVal('--backend') ?? 'stub';
-  if (backend !== 'stub') {
-    console.error(
-      `env: backend ${JSON.stringify(backend)} is not implemented yet ` +
-        '(phase 3: the trixie libvirt container)',
-    );
+  if (!['stub', 'libvirt'].includes(backend)) {
+    console.error(`env: unknown backend ${JSON.stringify(backend)}`);
     process.exit(1);
   }
   const m = manifest.read();
-  if (m?.backend === 'stub' && manifestLive(m)) {
+  if (m?.backend === backend && manifestLive(m)) {
     console.log(`env already up: ${m.virtweb.url} (pid ${m.virtweb.pid})`);
     return;
   }
@@ -72,15 +68,28 @@ async function cmdUp() {
   console.log('building virtweb...');
   build();
   const port = await pickPort();
-  const { pid, logPath } = start({ port });
+  const { pid, logPath } = start({ port, backend: backend === 'libvirt' ? 'ssh' : 'stub' });
   const url = `http://127.0.0.1:${port}`;
-  console.log(`starting virtweb (stub backend) on ${url} (pid ${pid})...`);
+  console.log(`starting virtweb (${backend} backend) on ${url} (pid ${pid})...`);
   await waitReady(url, 15000);
-  const serverId = await registerServer(url);
+
+  let sshPort;
+  let fields;
+  if (backend === 'libvirt') {
+    console.log('starting the libvirt host container...');
+    ({ sshPort } = await libvirt.startContainer());
+    console.log(`waiting for the host to be ready (sshd + libvirtd, ssh ${sshPort})...`);
+    await libvirt.waitHostReady(sshPort);
+    fields = { name: 'e2e', user: 'root', host: '127.0.0.1', port: sshPort, uri: 'qemu:///system' };
+  } else {
+    fields = { name: 'e2e', user: 'stub', host: 'stub-host' };
+  }
+  const serverId = await registerServer(url, fields);
   manifest.write({
     backend,
     created: new Date().toISOString(),
     virtweb: { url, pid, log: path.relative(manifest.E2E_ROOT, logPath) },
+    ...(sshPort ? { sshPort } : {}),
     serverId,
   });
   console.log(
@@ -99,8 +108,15 @@ function cmdDown() {
     kill(m.virtweb.pid);
     waitForExit(m.virtweb.pid);
   }
+  if (m.backend === 'libvirt') {
+    // The guest-disk volume survives (next up is fast); --wipe drops it.
+    libvirt.containerDown();
+    if (flags.has('--wipe')) libvirt.wipe();
+  }
   manifest.clear();
-  console.log('env down');
+  console.log(m.backend === 'libvirt' && !flags.has('--wipe')
+    ? 'env down (libvirt host container removed; image volume kept — env:down --wipe to drop it)'
+    : 'env down');
 }
 
 async function cmdStatus() {
@@ -155,10 +171,15 @@ async function cmdRestartApi() {
   kill(m.virtweb.pid);
   waitForExit(m.virtweb.pid);
   const port = Number(m.virtweb.url.split(':').pop());
-  const { pid, logPath } = start({ port });
+  const { pid, logPath } = start({ port, backend: m.backend === 'libvirt' ? 'ssh' : 'stub' });
   const url = m.virtweb.url;
   await waitReady(url, 15000);
-  const serverId = await registerServer(url); // finds the existing 'e2e' server
+  const serverId = await registerServer(url, {
+    name: 'e2e',
+    user: m.backend === 'libvirt' ? 'root' : 'stub',
+    host: m.backend === 'libvirt' ? '127.0.0.1' : 'stub-host',
+    ...(m.backend === 'libvirt' ? { port: m.sshPort, uri: 'qemu:///system' } : {}),
+  }); // finds the existing 'e2e' server
   m.virtweb.pid = pid;
   m.virtweb.log = path.relative(manifest.E2E_ROOT, logPath);
   m.serverId = serverId;
@@ -200,9 +221,12 @@ function cmdDoctor() {
     if (!existsSync(BINARY)) throw new Error('npm run env:up (builds it)');
     return BINARY;
   });
-  check('/dev/kvm (tier 2 only)', () => {
-    if (!existsSync('/dev/kvm')) throw new Error('absent → TCG fallback in phase 3');
-    return 'present';
+  check('/dev/kvm (informational; guests run TCG)', () => {
+    return existsSync('/dev/kvm') ? 'present (unused: rootless containers cannot open it)' : 'absent';
+  });
+  check('gcc (tier 2 shim build)', () => {
+    const out = execSync('gcc --version | head -1').toString().trim();
+    return out;
   });
   check('podman (tier 2 only)', () => {
     const out = execSync('podman --version').toString().trim();
@@ -229,8 +253,8 @@ switch (cmd) {
   case 'doctor': cmdDoctor(); break;
   default:
     console.error(
-      'usage: env.js <up [--backend stub] | down | status [--json] | logs | ' +
-        'reset | restart-api | doctor [--json]>',
+      'usage: env.js <up [--backend stub|libvirt] | down [--wipe] | status [--json] | ' +
+        'logs | reset | restart-api | doctor [--json]>',
     );
     process.exit(2);
 }

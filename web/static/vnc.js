@@ -76,8 +76,14 @@ class ChannelSocket {
 
   send(chunk) {
     if (this.readyState !== 'open') return;
+    // noVNC's websock hands us a view into its reusable send-queue
+    // buffer (WebSocket.send would have copied it synchronously). The
+    // uplink POST is async, and the buffer is reused immediately — so
+    // snapshot the bytes now or the wire stream comes out scrambled.
+    const bytes = new Uint8Array(chunk.byteLength);
+    bytes.set(chunk);
     // A failed POST kills the channel, which closes the socket here.
-    this._ch.write(chunk).catch(() => {});
+    this._ch.write(bytes).catch(() => {});
   }
 
   close() {
