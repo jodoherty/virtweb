@@ -28,41 +28,112 @@ never opens a direct socket to a hypervisor.
 
 ## Build
 
+The whole project is one dependency-free Go binary (the web frontend is
+embedded), so the only build prerequisite is the Go toolchain. There is
+no cgo, so cross-compiling for a Linux deploy target is a plain
+env-var thing.
+
 ```sh
-go build -o virtweb .
+make build      # -> ./virtweb        (native binary for the host you're on)
+make dist       # -> dist/virtweb-linux-amd64 (static, relocatable Linux x86-64)
+make test       # go test ./...
+make vet        # go vet ./...
+make clean      # remove ./virtweb and dist/
 ```
+
+Or without make:
+
+```sh
+go build -o virtweb .                                  # native
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o virtweb-linux-amd64 .
+```
+
+`make dist` stamps the version from `git describe` (e.g. `virtweb v0.1-3-gabc123`);
+`go build` alone reports `virtweb dev`. Check either with
+`./virtweb -version`.
 
 ## Run
 
 ```sh
 ./virtweb [-addr 127.0.0.1:8080] [-data-dir ~/.virtweb] [-backend ssh|stub]
+./virtweb -version     # print the version and exit
 ```
 
 | flag | default | meaning |
 |------|---------|---------|
 | `-addr` | `127.0.0.1:8080` | address to listen on |
-| `-data-dir` | `~/.virtweb` | where `servers.json` is persisted |
+| `-data-dir` | `~/.virtweb` | directory for `servers.json` (auto-created) |
 | `-backend` | `ssh` | `ssh` (production: virsh over SSH) or `stub` (offline demo/test) |
+| `-version` | — | print the version and exit |
+
+The server binds to `127.0.0.1` by default. To use it from another
+machine, run it behind a reverse proxy (or listen on a non-loopback
+addr) — the console/VNC/SPICE streams must reach the browser
+**unbuffered**; see "Reverse proxy notes" below.
 
 ## Requirements
 
-- Linux
-- The OpenSSH client (`ssh`) in the default path — virtweb runs `virsh`
-  on the remote host over SSH (`BatchMode=yes`,
-  `StrictHostKeyChecking=accept-new`, `ConnectTimeout=10`).
-- SSH access to each managed host. **Key-based auth is expected;
-  interactive passwords are not supported.**
+**To build:** the Go toolchain (any recent version; the module declares
+its own minimum). That's it.
 
-## Using it
+**To run in production (`-backend ssh`), on the host that runs virtweb:**
+- Linux, with the OpenSSH client (`ssh`) in the default path. virtweb
+  reaches each managed host by running `virsh` over SSH — it never opens
+  a direct socket to a hypervisor and never links an SSH library.
+  Fixed ssh options: `BatchMode=yes`, `StrictHostKeyChecking=accept-new`,
+  `ConnectTimeout=10`.
+- **Key-based SSH auth** to every managed host — virtweb is
+  non-interactive, so interactive password auth is not supported.
+- The remote host must have `virsh` on its PATH (i.e. libvirt installed).
 
-1. Start the binary and open the URL (default `http://127.0.0.1:8080`).
-2. **Add a server**: name, user, host, optional port, and the libvirt
-   URI (default `qemu:///system` — the *system* instance, where VMs live,
-   as opposed to `qemu:///session`).
-3. On the server page, the VM table lists each domain with state, vCPUs,
-   memory, IP (from `domifaddr`), and — for a running domain — its live
-   display address. Use the row actions (Start / Shutdown / Reboot /
-   Destroy) or open a VM's console/VNC/SPICE page.
+## Setup and configuration
+
+There is no config file to hand-edit for normal use — you add and manage
+servers from the web UI, and everything is persisted to
+`<data-dir>/servers.json` (default `~/.virtweb/servers.json`). That file
+is a plain JSON array; you can also edit it directly while virtweb is
+stopped.
+
+1. **Build and start.**
+   ```sh
+   make build
+   ./virtweb            # -> http://127.0.0.1:8080
+   ```
+2. **Open the URL** and click **Add server**. You'll be prompted for:
+   - **name** — your label for this host (unique).
+   - **user** — the SSH user on the remote host.
+   - **host** — the remote host's address (name or IP).
+   - **port** — the SSH port (leave blank for the default 22).
+   - **uri** — the libvirt URI. Use **`qemu:///system`** (the default) so
+     virtweb talks to the *system* libvirt instance, where VMs live.
+     (`qemu:///session` is the per-user session and is usually empty.)
+3. **SSH access** must already work from the virtweb host as that user —
+   e.g. `ssh -p <port> <user>@<host> virsh -c qemu:///system list` works
+   non-interactively. virtweb uses your existing key and known_hosts
+   behaviour (new host keys are accepted automatically via
+   `accept-new`).
+
+The server list, its persisted `servers.json`, and each server's shape
+(`name`, `user`, `host`, `port`, `uri`) are what virtweb keeps — nothing
+else is stored. A server you can't reach simply shows an error on its
+page until the SSH access is fixed.
+
+### Reverse proxy notes
+
+The console/VNC/SPICE transport is a long-lived, chunked HTTP response
+plus small POSTs. If you put virtweb behind a proxy (nginx, Caddy,
+h2/tls-terminating front-end, …), make sure the streaming responses are
+**passed through unbuffered** — virtweb sends `X-Accel-Buffering: no` and
+`Cache-Control: no-cache` for this, but your proxy must honour (or
+equivalent) no-buffering, or console/display updates will arrive in
+batches instead of live.
+
+## Managing VMs
+
+Once a server is added, its page lists every domain with state, vCPUs,
+memory, IP (from `domifaddr`), and — for a running domain — its live
+display address. Use the row actions (Start / Shutdown / Reboot /
+Destroy), or open a VM's console / VNC / SPICE page.
 
 ### Console / VNC / SPICE
 

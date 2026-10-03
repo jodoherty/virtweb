@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -43,11 +44,21 @@ var novncFS embed.FS
 //go:embed third-party/spice-html5-fork
 var spiceFS embed.FS
 
+// version is stamped at build time (see Makefile: -ldflags -X main.version).
+// Defaults to "dev" for plain `go build`.
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	addr := flag.String("addr", "127.0.0.1:8080", "address to listen on")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for persistent data (servers.json)")
 	backendKind := flag.String("backend", "ssh", "backend: ssh (production) or stub (offline demo/test mode)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("virtweb " + version)
+		return
+	}
 
 	// Frontend is served straight from the embedded filesystem.
 	webRoot, err := fs.Sub(webFS, "web")
@@ -102,7 +113,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("virtweb listening on http://%s (data dir: %s)", *addr, *dataDir)
+		log.Printf("virtweb %s listening on http://%s (data dir: %s)", version, *addr, *dataDir)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
