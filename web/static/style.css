@@ -130,6 +130,30 @@ td.actions > * { margin-right: 0.3rem; }
 }
 .edit-server button { margin-top: 0.6rem; }
 
+/* define-VM-from-XML panel (collapsed on the server page) */
+.define-vm {
+  margin-top: 0.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+}
+.define-vm summary { cursor: pointer; color: var(--muted); }
+.define-vm textarea {
+  display: block;
+  margin-top: 0.6rem;
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+.define-vm .start-label { display: inline-block; margin-top: 0.5rem; color: var(--muted); }
+.define-vm button { margin-top: 0.5rem; margin-left: 0.5rem; }
+
 /* serial console */
 .console-term {
   height: 65vh;

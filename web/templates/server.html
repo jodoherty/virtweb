@@ -14,6 +14,23 @@
     <button type="submit">Save</button>
   </form>
 </details>
+<details class="define-vm">
+  <summary>Define a VM from XML</summary>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/define">
+    <textarea name="xml" rows="8" spellcheck="false" required
+      placeholder="&lt;domain type=&#39;kvm&#39;&gt;
+  &lt;name&gt;myvm&lt;/name&gt;
+  &lt;memory unit=&#39;MiB&#39;&gt;2048&lt;/memory&gt;
+  &lt;vcpu&gt;2&lt;/vcpu&gt;
+  ...
+&lt;/domain&gt;" id="define-xml"></textarea>
+    <label class="start-label"><input type="checkbox" name="start" value="1"> Start immediately</label>
+    <button type="submit" id="define-btn">Define</button>
+  </form>
+  <p class="muted">The XML is a full libvirt domain definition (what
+  <code>virsh define</code> reads). It is run as-is on the server, so
+  only define domains you trust running there.</p>
+</details>
 <h2>Virtual machines</h2>
 {{if .VMs}}
 <table class="vm-table">
@@ -31,6 +48,8 @@
       <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/destroy"
             data-confirm="Destroy {{.Name}} now?"><button class="danger">Destroy</button></form>
       <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/reboot"><button>Reboot</button></form>
+      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/undefine"
+            data-confirm="Undefine {{.Name}}? This deletes the domain definition (it must be shut off)."><button class="danger">Undefine</button></form>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">Console</a>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/vnc">VNC</a>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/spice">SPICE</a>

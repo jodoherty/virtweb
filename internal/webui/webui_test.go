@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +62,23 @@ func (b *fakeBackend) Start(ctx context.Context, name string) error        { ret
 func (b *fakeBackend) Shutdown(ctx context.Context, name string) error    { return nil }
 func (b *fakeBackend) Destroy(ctx context.Context, name string) error     { return nil }
 func (b *fakeBackend) Reboot(ctx context.Context, name string) error      { return nil }
+func (b *fakeBackend) Define(ctx context.Context, xml string) error {
+	name := virt.DomainName(xml)
+	if name == "" {
+		return errors.New("no domain name in XML")
+	}
+	b.vms = append(b.vms, virt.VM{Name: name, State: "shut off"})
+	return nil
+}
+func (b *fakeBackend) Undefine(ctx context.Context, name string) error {
+	for i, v := range b.vms {
+		if v.Name == name {
+			b.vms = append(b.vms[:i], b.vms[i+1:]...)
+			return nil
+		}
+	}
+	return &vmNotFoundErr{name}
+}
 func (b *fakeBackend) Console(ctx context.Context, name string, in io.Reader, out io.Writer) error {
 	return nil
 }
@@ -193,6 +211,60 @@ func TestUpdateServerForm(t *testing.T) {
 	w = doForm(t, ui.Routes(), "/servers/nope/update", form)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400 for unknown id", w.Code)
+	}
+}
+
+func TestDefineVMForm(t *testing.T) {
+	ui, st := newTestUI(t)
+	srv := addServer(t, st)
+
+	// valid define
+	form := url.Values{}
+	form.Set("xml", "<domain type='kvm'><name>newvm</name></domain>")
+	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("got %d, want 303: %s", w.Code, body(w))
+	}
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "ok=") {
+		t.Fatalf("Location = %q, want ok banner", loc)
+	}
+
+	// invalid (no name)
+	form2 := url.Values{}
+	form2.Set("xml", "<domain type='kvm'></domain>")
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form2)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", w.Code)
+	}
+}
+
+func TestUndefineVMForm(t *testing.T) {
+	ui, st := newTestUI(t)
+	srv := addServer(t, st)
+
+	form := url.Values{}
+	form.Set("xml", "<domain type='kvm'><name>newvm</name></domain>")
+	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("define got %d, want 303", w.Code)
+	}
+	if got := len(st.List()); got != 1 {
+		t.Fatalf("servers = %d, want 1", got)
+	}
+
+	// undefine it
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/newvm/undefine", url.Values{})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("undefine got %d, want 303: %s", w.Code, body(w))
+	}
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "ok=") {
+		t.Fatalf("Location = %q, want ok banner", loc)
+	}
+
+	// unknown VM -> error banner (still 303, with err=)
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/ghost/undefine", url.Values{})
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "err=") {
+		t.Fatalf("Location = %q, want err banner", loc)
 	}
 }
 

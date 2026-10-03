@@ -88,6 +88,43 @@ test('edit server form updates the definition in place', async ({ page }) => {
   await expect(page).toHaveURL(new RegExp(`/servers/${serverId}`));
 });
 
+test('define a VM from XML, start it, destroy it', async ({ page }) => {
+  const name = `def-${Date.now()}`;
+  const xml = `<domain type='kvm'>
+  <name>${name}</name>
+  <memory unit='MiB'>2048</memory>
+  <vcpu>2</vcpu>
+</domain>`;
+  await page.goto(`${url()}/servers/${serverId}`);
+  // The define panel is a collapsed <details>; open it.
+  await page.locator('.define-vm summary').click();
+  await page.locator('#define-xml').fill(xml);
+  await page.locator('#define-btn').click();
+  await expect(page.locator('.banner.ok')).toContainText(`defined ${name}`);
+  await expect(
+    page.locator('.vm-table tr', { hasText: name }),
+  ).toContainText('shut off');
+
+  // Start it from its row. The table is server-rendered with no
+  // auto-refresh: the PRG redirect reloads once ("starting"), so poll
+  // by reloading until the stub has finished booting.
+  const row = page.locator('.vm-table tr', { hasText: name });
+  await row.locator('form[action$="/start"] button').click();
+  await expect(page.locator('.banner.ok')).toContainText(`start ${name}`);
+  await expect
+    .poll(async () => {
+      await page.reload();
+      return row.innerText();
+    }, { message: `${name} running`, timeout: 10000 })
+    .toContain('running');
+
+  // Clean up (keep the stub env tidy for the other specs): power off,
+  // then remove the definition (destroy alone leaves it defined).
+  await api.action(serverId, name, 'destroy');
+  await api.deleteVM(serverId, name);
+  expect((await api.listVMs(serverId)).some((v) => v.name === name)).toBe(false);
+});
+
 test('VM list shows the default table', async ({ page }) => {
   await page.goto(`${url()}/servers/${serverId}`);
   await expect(page.locator('h2', { hasText: 'Virtual machines' })).toBeVisible();

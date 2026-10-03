@@ -72,6 +72,8 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/servers/{id}", a.handleUpdateServer)
 	mux.HandleFunc("DELETE /api/servers/{id}", a.handleRemoveServer)
 	mux.HandleFunc("GET /api/servers/{id}/vms", a.handleListVMs)
+	mux.HandleFunc("POST /api/servers/{id}/vms", a.handleDefineVM)
+	mux.HandleFunc("DELETE /api/servers/{id}/vms/{name}", a.handleUndefineVM)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/{action}", a.handleVMAction)
 	mux.HandleFunc("GET /api/servers/{id}/ping", a.handlePing)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
@@ -149,6 +151,48 @@ func (a *API) handleRemoveServer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleDefineVM creates a domain from a libvirt domain XML document.
+// The XML travels in the JSON body; name is derived from it. An
+// optional "start": true starts the domain right after defining it.
+func (a *API) handleDefineVM(w http.ResponseWriter, r *http.Request) {
+	_, b, err := a.backend(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		XML   string `json:"xml"`
+		Start bool   `json:"start"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	name := virt.DomainName(req.XML)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "invalid domain XML: missing <name> element")
+		return
+	}
+	if err := b.Define(r.Context(), req.XML); err != nil {
+		writeErr(w, http.StatusBadGateway, "define %s: %v", name, err)
+		return
+	}
+	if req.Start {
+		if err := b.Start(r.Context(), name); err != nil {
+			// The domain is defined (visible in the list); the start
+			// failure is reported alongside.
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"name": name, "started": false, "error": err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"name": name, "started": true})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"name": name})
+}
+
 func (a *API) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	_, b, err := a.backend(r.PathValue("id"))
 	if err != nil {
@@ -174,6 +218,21 @@ func (a *API) handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleUndefineVM removes a domain definition (virsh undefine); the
+// domain must be shut off (destroy it first).
+func (a *API) handleUndefineVM(w http.ResponseWriter, r *http.Request) {
+	_, b, err := a.backend(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	if err := b.Undefine(r.Context(), r.PathValue("name")); err != nil {
+		writeErr(w, http.StatusBadGateway, "undefine: %v", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) handleVMAction(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@
 package virsh
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -193,6 +194,38 @@ func (b *Backend) Destroy(ctx context.Context, name string) error { return b.act
 
 // Reboot implements virt.Backend.
 func (b *Backend) Reboot(ctx context.Context, name string) error { return b.act(ctx, "reboot", name) }
+
+// Define implements virt.Backend with `virsh define -`: the XML is
+// Define implements virt.Backend. `virsh define` takes a file path
+// (not stdin), so the XML is written to a remote temp file over the
+// same ssh session (its stdin), defined from it, and removed — one
+// command, no scp, nothing left behind on failure.
+func (b *Backend) Define(ctx context.Context, xml string) error {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	var out bytes.Buffer
+	cmd := "cat > /tmp/virtweb-define.$$.xml && " +
+		"virsh " + shellQuote("-c") + " " + shellQuote(b.srv.URI) +
+		" define /tmp/virtweb-define.$$.xml; rc=$?; " +
+		"rm -f /tmp/virtweb-define.$$.xml; exit $rc"
+	err := b.run.Connect(ctx, b.srv.User, b.srv.Host, b.srv.Port, false,
+		cmd, strings.NewReader(xml), &out)
+	if err != nil {
+		// sshexec.Connect wires virsh's stderr into out; surface it so
+		// e.g. "domain with the same name already defined" is visible.
+		if msg := strings.TrimSpace(out.String()); msg != "" {
+			return fmt.Errorf("virsh define: %v: %s", err, msg)
+		}
+		return err
+	}
+	return nil
+}
+
+// Undefine implements virt.Backend with `virsh undefine`.
+func (b *Backend) Undefine(ctx context.Context, name string) error {
+	_, err := b.virsh(ctx, "undefine", name)
+	return err
+}
 
 // Console implements virt.Backend by opening `virsh console` over a
 // remote pty (ssh -tt) and wiring the streams through.

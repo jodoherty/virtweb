@@ -7,6 +7,7 @@ package virt
 import (
 	"context"
 	"io"
+	"strings"
 )
 
 // Server is a libvirt host reachable over SSH.
@@ -31,6 +32,22 @@ type VM struct {
 	VNCPort int    `json:"vncPort,omitempty"`     // 0 if not VNC-enabled
 }
 
+// DomainName extracts the domain name from a libvirt domain XML
+// document: the first <name> element, which in domain XML always comes
+// right after the <domain> tag — before any other <name> elements
+// (interface names, etc.). Returns "" when absent.
+func DomainName(xml string) string {
+	i := strings.Index(xml, "<name>")
+	if i < 0 {
+		return ""
+	}
+	rest := xml[i+len("<name>"):]
+	if j := strings.Index(rest, "</name>"); j >= 0 {
+		return strings.TrimSpace(rest[:j])
+	}
+	return ""
+}
+
 // Backend is the surface virtweb uses to manage one libvirt host.
 type Backend interface {
 	// Ping checks that the host and its libvirt are reachable.
@@ -41,6 +58,15 @@ type Backend interface {
 
 	// VMInfo returns the details for one VM.
 	VMInfo(ctx context.Context, name string) (VM, error)
+
+	// Define creates a persistent domain from a libvirt domain XML
+	// document (the caller has already validated that it names a
+	// domain). The domain starts shut off; Start it afterwards.
+	Define(ctx context.Context, xml string) error
+
+	// Undefine removes a domain definition (virsh undefine); it fails
+	// if the domain is running — destroy it first.
+	Undefine(ctx context.Context, name string) error
 
 	Start(ctx context.Context, name string) error
 	Shutdown(ctx context.Context, name string) error // graceful (ACPI)

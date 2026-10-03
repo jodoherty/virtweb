@@ -43,6 +43,9 @@ export class Api {
   listVMs(serverId) {
     return this.request('GET', `/api/servers/${serverId}/vms`);
   }
+  deleteVM(serverId, name) {
+    return this.request('DELETE', `/api/servers/${serverId}/vms/${encodeURIComponent(name)}`);
+  }
   async ping(serverId) {
     return this.request('GET', `/api/servers/${serverId}/ping`);
   }

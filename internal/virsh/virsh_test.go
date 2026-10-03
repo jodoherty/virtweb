@@ -25,6 +25,9 @@ type fakeRunner struct {
 	// (used by the ListVMs fan-out bound test).
 	concurrent int
 	peak       int
+	// stdin holds the bytes handed to Connect (one entry per Connect
+	// call), for tests that pipe input (virsh define -).
+	stdin []string
 }
 
 func (f *fakeRunner) Run(_ context.Context, _, _ string, _ int, command string) (string, error) {
@@ -54,11 +57,13 @@ func (f *fakeRunner) Run(_ context.Context, _, _ string, _ int, command string) 
 }
 
 func (f *fakeRunner) Connect(_ context.Context, _, _ string, _ int, _ bool, command string, in io.Reader, out io.Writer) error {
+	data, _ := io.ReadAll(in)
 	f.mu.Lock()
 	f.commands = append(f.commands, command)
+	f.stdin = append(f.stdin, string(data))
 	f.mu.Unlock()
 	// emulate an echo console: copy stdin to out, then write a banner.
-	io.Copy(out, in)
+	_, _ = out.Write(data)
 	_, _ = out.Write([]byte("\nCONSOLE-CLOSED\n"))
 	return nil
 }
@@ -117,6 +122,7 @@ func newFake() (*fakeRunner, *Backend) {
 			`virsh -c qemu:///system shutdown fedora42`: "",
 			`virsh -c qemu:///system destroy fedora42`:  "",
 			`virsh -c qemu:///system reboot fedora42`:   "",
+			`virsh -c qemu:///system undefine newvm`:   "",
 			`virsh -c qemu:///system dominfo fedora42`: domInfoFedora,
 			`virsh -c qemu:///system dominfo win11`: domInfoWin11,
 			`virsh -c qemu:///system domifaddr fedora42`: domIfAddr,
@@ -374,5 +380,43 @@ func TestListVMsConcurrencyBound(t *testing.T) {
 	}
 	if run.peak < 2 {
 		t.Errorf("peak concurrent ssh = %d, want >= 2 (fan-out should still overlap)", run.peak)
+	}
+}
+
+// TestDefine: the XML is piped over stdin to a single remote command
+// that writes a temp file, defines it, and removes it.
+func TestDefine(t *testing.T) {
+	fr, b := newFake()
+	xml := "<domain type='kvm'><name>newvm</name><memory unit='MiB'>1024</memory></domain>"
+	if err := b.Define(context.Background(), xml); err != nil {
+		t.Fatal(err)
+	}
+	cmds := fr.allCommands()
+	if len(cmds) != 1 {
+		t.Fatalf("commands = %v, want one", cmds)
+	}
+	for _, w := range []string{
+		"cat > /tmp/virtweb-define.$$.xml",
+		"virsh -c qemu:///system define /tmp/virtweb-define.$$.xml",
+		"rm -f /tmp/virtweb-define.$$.xml",
+		"exit $rc",
+	} {
+		if !strings.Contains(cmds[0], w) {
+			t.Fatalf("command %q missing %q", cmds[0], w)
+		}
+	}
+	if len(fr.stdin) != 1 || fr.stdin[0] != xml {
+		t.Fatalf("stdin = %v, want the domain XML passed through", fr.stdin)
+	}
+}
+
+func TestUndefine(t *testing.T) {
+	fr, b := newFake()
+	if err := b.Undefine(context.Background(), "newvm"); err != nil {
+		t.Fatal(err)
+	}
+	cmds := fr.allCommands()
+	if len(cmds) != 1 || cmds[0] != "virsh -c qemu:///system undefine newvm" {
+		t.Fatalf("commands = %v", cmds)
 	}
 }

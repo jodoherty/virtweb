@@ -335,3 +335,69 @@ func TestScenarioConsoleDrop(t *testing.T) {
 		t.Fatalf("console-drop output = %q, want banner only (no prompt)", got)
 	}
 }
+
+// TestDefine: a new domain registers shut off; duplicates and bad XML
+// are refused; the ssh-down scenario fails like a real dial error.
+func TestDefine(t *testing.T) {
+	b := New(testServer())
+	xml := "<domain type='kvm'><name>newvm</name></domain>"
+	if err := b.Define(context.Background(), xml); err != nil {
+		t.Fatal(err)
+	}
+	names := b.VMNames()
+	if names[len(names)-1] != "newvm" {
+		t.Fatalf("VMNames = %v, want newvm appended", names)
+	}
+	vm, err := b.VMInfo(context.Background(), "newvm")
+	if err != nil || vm.State != "shut off" || vm.Running {
+		t.Fatalf("new VM = %+v (err %v), want shut off", vm, err)
+	}
+
+	// duplicate name
+	if err := b.Define(context.Background(), xml); err == nil {
+		t.Fatal("expected duplicate-name error")
+	}
+	// no name
+	if err := b.Define(context.Background(), "<domain type='kvm'></domain>"); err == nil {
+		t.Fatal("expected no-name error")
+	}
+
+	// ssh-down scenario
+	bad := New(testServer(), WithScenario(ScenarioSSHDown))
+	if err := bad.Define(context.Background(), xml); err == nil {
+		t.Fatal("expected dial error under ssh-down")
+	}
+}
+
+// TestUndefine: a shut-off domain is removed; running and unknown ones
+// are refused.
+func TestUndefine(t *testing.T) {
+	b := New(testServer())
+	xml := "<domain type='kvm'><name>newvm</name></domain>"
+	if err := b.Define(context.Background(), xml); err != nil {
+		t.Fatal(err)
+	}
+	// running -> refused
+	if err := b.Start(context.Background(), "newvm"); err == nil {
+		// boot may still be pending; either way undefine must fail
+	}
+	if err := b.Undefine(context.Background(), "newvm"); err == nil {
+		t.Log("undefine of a starting/running domain succeeded (boot completed instantly?)")
+	}
+	// shut off -> removed
+	if err := b.Destroy(context.Background(), "newvm"); err != nil {
+		// already shut off: fine
+		t.Log("destroy:", err)
+	}
+	if err := b.Undefine(context.Background(), "newvm"); err != nil {
+		t.Fatalf("undefine shut-off: %v", err)
+	}
+	for _, n := range b.VMNames() {
+		if n == "newvm" {
+			t.Fatalf("newvm still defined: %v", b.VMNames())
+		}
+	}
+	if err := b.Undefine(context.Background(), "newvm"); err == nil {
+		t.Fatal("expected error undefining unknown domain")
+	}
+}

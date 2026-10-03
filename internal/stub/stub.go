@@ -251,6 +251,51 @@ func (b *Backend) vmToVirt(vm *vm) virt.VM {
 	return v
 }
 
+// Define implements virt.Backend: registers a new shut-off domain
+// parsed from the XML (only the <name> is used; the stub does not
+// model resources).
+func (b *Backend) Define(ctx context.Context, xml string) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	name := virt.DomainName(xml)
+	if name == "" {
+		return fmt.Errorf("no domain name in XML")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.vms[name]; ok {
+		return fmt.Errorf("cannot define domain %q: with the same name", name)
+	}
+	b.addVM(VMSpec{Name: name, VCPUs: 2, MemoryMiB: 2048})
+	return nil
+}
+
+// Undefine implements virt.Backend: removes the domain definition;
+// refuses while the domain is running (destroy it first).
+func (b *Backend) Undefine(ctx context.Context, name string) error {
+	if b.scenario == ScenarioSSHDown {
+		return b.dialError()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	vm, ok := b.vms[name]
+	if !ok {
+		return fmt.Errorf("domain %q not found", name)
+	}
+	if vm.state != stShutOff {
+		return fmt.Errorf("cannot undefine domain %q: domain is running", name)
+	}
+	delete(b.vms, name)
+	for i, n := range b.order {
+		if n == name {
+			b.order = append(b.order[:i], b.order[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 // Start implements virt.Backend. The transition to running is delayed
 // by bootDelay (the observable in-between state is "starting").
 func (b *Backend) Start(ctx context.Context, name string) error {

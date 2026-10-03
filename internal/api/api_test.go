@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"strings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,22 @@ func (f *fakeBackend) VMInfo(ctx context.Context, name string) (virt.VM, error) 
 		return virt.VM{Name: name, Running: true, SpiceAddr: "127.0.0.1:5991", VNCPort: 5900}, nil
 	}
 	return virt.VM{Name: name}, nil
+}
+func (f *fakeBackend) Define(ctx context.Context, xml string) error {
+	name := virt.DomainName(xml)
+	if name == "" {
+		return errors.New("no domain name in XML")
+	}
+	return f.record(ctx, "define "+name)
+}
+func (f *fakeBackend) Undefine(ctx context.Context, name string) error {
+	f.mu.Lock()
+	f.actions = append(f.actions, "undefine "+name)
+	f.mu.Unlock()
+	if name == "boom" {
+		return errors.New("fake undefine failed")
+	}
+	return nil
 }
 func (f *fakeBackend) Start(ctx context.Context, name string) error {
 	return f.record(ctx, "start "+name)
@@ -252,6 +269,100 @@ func TestServerUpdate(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("update unknown id status = %d, want 404", res.StatusCode)
+	}
+}
+
+func TestDefineVM(t *testing.T) {
+	ts, ff, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	do := func(body string) (int, map[string]any) {
+		t.Helper()
+		res, err := http.Post(ts.URL+"/api/servers/"+id+"/vms",
+			"application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out map[string]any
+		json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+
+	// plain define -> 201, name reported.
+	code, out := do(`{"xml":"<domain type='kvm'><name>newvm</name></domain>"}`)
+	if code != http.StatusCreated || out["name"] != "newvm" {
+		t.Fatalf("define = %d %+v", code, out)
+	}
+
+	// define + start -> 201 with started.
+	code, out = do(`{"xml":"<domain type='kvm'><name>newvm2</name></domain>","start":true}`)
+	if code != http.StatusCreated || out["started"] != true {
+		t.Fatalf("define+start = %d %+v", code, out)
+	}
+
+	// no <name> -> 400.
+	code, _ = do(`{"xml":"<domain type='kvm'></domain>"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("nameless define = %d, want 400", code)
+	}
+	// invalid JSON -> 400.
+	code, _ = do(`{`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("bad JSON = %d, want 400", code)
+	}
+
+	// unknown server -> 404.
+	res, _ := http.Post(ts.URL+"/api/servers/nope/vms", "application/json",
+		strings.NewReader(`{"xml":"<domain><name>x</name></domain>"}`))
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("define on unknown server = %d, want 404", res.StatusCode)
+	}
+
+	// the fake backend recorded both defines.
+	acts := append([]string(nil), ff.byID[id].actions...)
+	want := map[string]bool{"define newvm": true, "define newvm2": true}
+	for _, a := range acts {
+		delete(want, a)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing recorded defines: %v (all: %v)", want, acts)
+	}
+}
+
+func TestUndefineVM(t *testing.T) {
+	ts, _, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+
+	del := func(name string) int {
+		t.Helper()
+		req, err := http.NewRequest("DELETE",
+			ts.URL+"/api/servers/"+id+"/vms/"+name, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+
+	// the fake backend records any undefine.
+	if code := del("newvm"); code != http.StatusNoContent {
+		t.Fatalf("undefine status = %d, want 204", code)
+	}
+	// "boom" makes the fake action fail -> 502.
+	if code := del("boom"); code != http.StatusBadGateway {
+		t.Fatalf("failing undefine status = %d, want 502", code)
+	}
+	// unknown server -> 404.
+	req, _ := http.NewRequest("DELETE", ts.URL+"/api/servers/nope/vms/x", nil)
+	res, _ := http.DefaultClient.Do(req)
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("undefine on unknown server = %d, want 404", res.StatusCode)
 	}
 }
 

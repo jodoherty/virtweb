@@ -205,8 +205,32 @@ terminates TLS/mTLS itself.
 
 Once a server is added, its page lists every domain with state, vCPUs,
 memory, IP (from `domifaddr`), and — for a running domain — its live
-display address. Use the row actions (Start / Shutdown / Reboot /
-Destroy), or open a VM's console / VNC / SPICE page.
+display address. Row actions: **Start / Shutdown / Destroy / Reboot /
+Undefine** (Undefine deletes the domain definition and is only offered
+when the domain is shut off; it asks for confirmation), plus open a VM's
+console / VNC / SPICE page. A server page also has a collapsed
+**"Define a VM"** panel: paste a libvirt domain XML document, optionally
+"start immediately", submit. The server is edited in place from its page
+as well (host/port/user, name, display mode).
+
+### HTTP API
+
+The UI is a thin form over a small JSON API, also usable directly
+(every request needs the server's id in the URL — see the server store):
+
+```
+GET    /api/servers                         list servers
+POST   /api/servers                         create server  {name, host, port, user, displays}
+PUT    /api/servers/{id}                    update server in place
+DELETE /api/servers/{id}                    delete server
+GET    /api/servers/{id}/vms                list domains
+POST   /api/servers/{id}/vms                define domain  {xml, start?}
+DELETE /api/servers/{id}/vms/{name}         undefine domain
+POST   /api/servers/{id}/vms/{name}/{start|shutdown|destroy|reboot}
+GET    /api/servers/{id}/vms/{name}/console/stream   (+POST .../console/input)
+GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice
+       (+POST .../tunnel?id=<sid>&dir=data|input)
+```
 
 ### Console / VNC / SPICE
 
