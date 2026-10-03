@@ -11,14 +11,13 @@ export class TunnelSession {
    * @param {string} o.baseUrl virtweb base URL
    * @param {string} o.serverId
    * @param {string} o.vm
-   * @param {number|string} o.port tunnel port (or o.target)
-   * @param {string} [o.target] full host:port target (overrides port)
+   * @param {string} o.display display to tunnel to, resolved server-side (vnc|spice)
    * @param {string} [o.logPath]
    * @param {(chunk: Uint8Array) => void} [o.onChunk]
    */
-  async open({ baseUrl, serverId, vm, port, target, logPath, onChunk }) {
+  async open({ baseUrl, serverId, vm, display, logPath, onChunk }) {
     const vmName = encodeURIComponent(vm);
-    const q = target ? `?target=${encodeURIComponent(target)}` : `?port=${port}`;
+    const q = `?display=${encodeURIComponent(display)}`;
     this.streamUrl = `${baseUrl}/api/servers/${serverId}/vms/${vmName}/tunnel/stream${q}`;
     this.logPath = logPath;
     this.text = '';

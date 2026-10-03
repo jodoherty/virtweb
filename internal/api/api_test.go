@@ -38,6 +38,11 @@ func (f *fakeBackend) ListVMs(ctx context.Context) ([]virt.VM, error) {
 	return f.vms, nil
 }
 func (f *fakeBackend) VMInfo(ctx context.Context, name string) (virt.VM, error) {
+	// vm1 has both displays (the tunnel tests resolve against it);
+	// any other name is a bare VM with no display (the 503 path).
+	if name == "vm1" {
+		return virt.VM{Name: name, Running: true, SpiceAddr: "127.0.0.1:5991", VNCPort: 5900}, nil
+	}
 	return virt.VM{Name: name}, nil
 }
 func (f *fakeBackend) Start(ctx context.Context, name string) error {

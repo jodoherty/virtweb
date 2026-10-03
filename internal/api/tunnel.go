@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -27,19 +26,25 @@ import (
 // same target. Two concurrent streams to the same target are
 // therefore both valid and get distinct ids.
 //
-// The client selects the remote endpoint with ?target=host:port or
-// ?port=N (target defaults to the server host itself, where the
-// hypervisor's display servers listen). r.Context() cancels on client
-// disconnect and is passed to the backend, which kills the ssh session.
+// The client names which display it wants to view (?display=vnc|
+// spice); the server resolves the destination from the VM's live
+// display info (virsh domdisplay / graphics port). No client-supplied
+// host:port is accepted — that would let an authenticated user point
+// the remote SSH user at an arbitrary TCP service (SSRF: port
+// scanning, cloud metadata, services on the remote host's loopback).
+// r.Context() cancels on client disconnect and is passed to the
+// backend, which kills the ssh session.
 
 // maxTunnelInputBody caps a single input POST. SPICE/VNC client→server
 // messages are small, but display-adjacent traffic (agent, clipboard)
 // can get bigger than keystrokes.
 const maxTunnelInputBody = 512 << 10
 
-// errTunnelNoID is the input POST missing its ?id= session handle.
-var errTunnelNoID = errors.New("missing tunnel session id")
-var errTunnelTarget = errors.New("invalid tunnel target")
+var (
+	errTunnelNoID = errors.New("missing tunnel session id")
+	errBadDisplay = errors.New("invalid or missing ?display= (want vnc or spice)")
+	errNoDisplay  = errors.New("the requested display is not enabled on this VM")
+)
 
 // newTunnelID returns a random hex session handle.
 func newTunnelID() string {
@@ -53,19 +58,25 @@ func newTunnelID() string {
 	return hex.EncodeToString(b)
 }
 
-// tunnelTarget resolves the ?target=/ ?port= query into "host:port".
-func tunnelTarget(srv virt.Server, q url.Values) (string, error) {
-	if t := q.Get("target"); t != "" {
-		if strings.ContainsAny(t, " \t") || !strings.Contains(t, ":") {
-			return "", errTunnelTarget
+// displayTarget resolves the tunnel destination server-side from the
+// VM's live display info. The client picks which display to view; the
+// server decides where that display actually lives. There is
+// deliberately no client-supplied host:port (see the package comment).
+func displayTarget(srv virt.Server, vm virt.VM, display string) (string, error) {
+	switch display {
+	case "vnc":
+		if vm.VNCPort <= 0 {
+			return "", errNoDisplay
 		}
-		return t, nil
+		return srv.Host + ":" + strconv.Itoa(vm.VNCPort), nil
+	case "spice":
+		if vm.SpiceAddr == "" {
+			return "", errNoDisplay
+		}
+		return vm.SpiceAddr, nil
+	default:
+		return "", errBadDisplay
 	}
-	p, err := strconv.Atoi(q.Get("port"))
-	if err != nil || p < 1 || p > 65535 {
-		return "", errTunnelTarget
-	}
-	return srv.Host + ":" + strconv.Itoa(p), nil
 }
 
 // handleTunnelStream opens a new tunnel session: a chunked, flushed
@@ -79,9 +90,19 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "%v", err)
 		return
 	}
-	target, err := tunnelTarget(srv, r.URL.Query())
+	display := r.URL.Query().Get("display")
+	if display != "vnc" && display != "spice" {
+		writeErr(w, http.StatusBadRequest, "%v", errBadDisplay)
+		return
+	}
+	vm, err := b.VMInfo(r.Context(), name)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "%v: use ?target=host:port or ?port=N", errTunnelTarget)
+		writeErr(w, http.StatusBadGateway, "display info: %v", err)
+		return
+	}
+	target, err := displayTarget(srv, vm, display)
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "%v", err)
 		return
 	}
 	sid := newTunnelID()

@@ -30,7 +30,7 @@ func TestTunnelStreamRoundTrip(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
 	client := &http.Client{}
-	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?port=5991", id)
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=spice", id)
 	inputURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/input", id)
 
 	res, sid := openTunnelStream(t, client, streamURL)
@@ -64,7 +64,9 @@ func TestTunnelStreamRoundTrip(t *testing.T) {
 	// the backend context and ends the session.
 	res.Body.Close()
 	buf := <-out
-	want := "stub-tunnel: vm1 h:5991\nchunk 1\nchunk 2\nhello"
+	// The destination is resolved server-side: vm1's SPICE display is
+	// 127.0.0.1:5991 in the fake backend.
+	want := "stub-tunnel: vm1 127.0.0.1:5991\nchunk 1\nchunk 2\nhello"
 	if string(buf) != want {
 		t.Fatalf("streamed output = %q, want %q", buf, want)
 	}
@@ -77,7 +79,7 @@ func TestTunnelConcurrentSameTarget(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
 	client := &http.Client{}
-	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?port=5991", id)
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=spice", id)
 
 	a, sidA := openTunnelStream(t, client, streamURL)
 	b, sidB := openTunnelStream(t, client, streamURL)
@@ -88,29 +90,43 @@ func TestTunnelConcurrentSameTarget(t *testing.T) {
 	b.Body.Close()
 }
 
-func TestTunnelTargetValidation(t *testing.T) {
+func TestTunnelDisplayValidation(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
-
-	for _, q := range []string{"?port=abc", "?port=0", "?port=99999", "?target=5991", ""} {
-		res, err := http.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream%s", id, q))
+	stream := func(name, q string) int {
+		res, err := http.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/%s/tunnel/stream%s", id, name, q))
 		if err != nil {
 			t.Fatal(err)
 		}
 		res.Body.Close()
-		if res.StatusCode != http.StatusBadRequest {
-			t.Fatalf("stream %q status = %d, want 400", q, res.StatusCode)
+		return res.StatusCode
+	}
+
+	// Missing or invalid display -> 400.
+	for _, q := range []string{"", "?display=bogus", "?display="} {
+		if got := stream("vm1", q); got != http.StatusBadRequest {
+			t.Fatalf("stream %q status = %d, want 400", q, got)
 		}
 	}
 
-	// Explicit host:port target works.
-	res, err := http.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?target=192.0.2.10:5991", id))
-	if err != nil {
-		t.Fatal(err)
+	// A client-supplied ?target= is ignored; only ?display= is honoured.
+	// (vm1's spice display resolves to 127.0.0.1:5991, not the target.)
+	if got := stream("vm1", "?display=spice&target=1.2.3.4:9999"); got != http.StatusOK {
+		t.Fatalf("stream with ignored target status = %d, want 200", got)
 	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("explicit target status = %d, want 200", res.StatusCode)
+
+	// Both displays resolve on vm1.
+	if got := stream("vm1", "?display=vnc"); got != http.StatusOK {
+		t.Fatalf("stream ?display=vnc status = %d, want 200", got)
+	}
+	if got := stream("vm1", "?display=spice"); got != http.StatusOK {
+		t.Fatalf("stream ?display=spice status = %d, want 200", got)
+	}
+
+	// A VM with no such display -> 503 (the requested display is not
+	// enabled).
+	if got := stream("vm2", "?display=spice"); got != http.StatusServiceUnavailable {
+		t.Fatalf("stream vm2 ?display=spice status = %d, want 503", got)
 	}
 }
 

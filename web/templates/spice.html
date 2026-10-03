@@ -2,17 +2,12 @@
 <p><a href="/servers/{{.Server.ID}}">←</a> SPICE — <strong>{{.VM.Name}}</strong>
   <span class="muted">({{.VM.State}})</span></p>
 <form id="spice-form">
-  <label>Address (host:port)
-    <input name="address" size="18"
-           value="{{if .VM.SpiceAddr}}{{.VM.SpiceAddr}}{{else}}127.0.0.1:5991{{end}}"></label>
   <label>Password <input name="password" type="password" size="20"></label>
   <button type="submit">Connect</button>
 </form>
 <p id="spice-status" class="muted">
   {{if not .Running}}This VM is {{.VM.State}} — start it first.{{end}}
-  The address is the SPICE display (from <code>virsh domdisplay</code>);
-  SPICE is often loopback-bound, so <code>127.0.0.1</code> means the
-  server host itself.</p>
+  {{if .VM.SpiceAddr}}SPICE display: <code>{{.VM.SpiceAddr}}</code> (resolved on the server from <code>virsh domdisplay</code>; <code>127.0.0.1</code> means the server host itself, where SPICE is often loopback-bound).{{else}}No SPICE display reported — start the VM first.{{end}}</p>
 <button id="spice-reconnect" hidden>Reconnect</button>
 <div id="spice-messages"></div>
 <div id="spice" class="spice-frame"></div>

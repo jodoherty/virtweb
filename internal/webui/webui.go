@@ -261,7 +261,9 @@ func (u *UI) handleVNCPage(w http.ResponseWriter, r *http.Request) {
 	cfg := map[string]any{"streamUrl": "", "inputUrl": "", "password": ""}
 	if vm.VNCPort > 0 {
 		base := "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/tunnel"
-		q := "?port=" + strconv.Itoa(vm.VNCPort)
+		// The destination (srv.Host:port) is resolved server-side from
+		// this VM's live VNC port; the client only names the display.
+		q := "?display=vnc"
 		cfg["streamUrl"] = base + "/stream" + q
 		cfg["inputUrl"] = base + "/input" + q
 	} else {
@@ -292,8 +294,9 @@ func (u *UI) handleSpicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The SPICE port is auto-assigned at boot and the display is often
 	// loopback-bound, so the address comes from `virsh domdisplay`
-	// (vm.SpiceAddr); the page takes it as a form field default, and the
-	// tunnel endpoints use it as ?target=host:port.
+	// (vm.SpiceAddr). It is shown on the page for information, but the
+	// tunnel destination is resolved server-side (?display=spice) — the
+	// client never supplies a host:port.
 	j, _ := json.Marshal(map[string]string{
 		"tunnelBase": "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/tunnel",
 		"defaultAddr": vm.SpiceAddr,

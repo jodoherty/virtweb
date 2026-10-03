@@ -192,7 +192,14 @@ Destroy), or open a VM's console / VNC / SPICE page.
   concurrent tunnel (the same topology as websockify's
   WebSocket-per-channel). The display address comes from `virsh
   domdisplay` (SPICE ports are auto-assigned at boot and the display is
-  often loopback-bound, so the page takes `host:port`).
+  often loopback-bound).
+
+Both display tunnels are **server-resolved**: the client names which
+display to view (`?display=vnc|spice`) and virtweb resolves the
+destination from the VM's live display info. No client-supplied
+`host:port` is accepted on the tunnel endpoint — that would let an
+authenticated user point the remote SSH user at an arbitrary TCP
+service (SSRF).
 
 All three use the same plain-HTTP duplex transport — see
 `web/static/duplex.js` for the design notes (ordering, h2, teardown).
