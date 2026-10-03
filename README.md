@@ -185,6 +185,21 @@ Run and debug it (commands, the manifest, attach vs own, raw-serial
 access): see **`e2e/AGENTS.md`**. Design rationale: `TESTING.md` in the
 parent directory.
 
+## Releasing
+
+The definition-of-done gate is encoded in the Makefile so a release is a
+single command:
+
+```sh
+make check     # always run: go vet + unit tests + the fast (stub) e2e tier
+make release   # before a release: `check` + the slow, real (libvirt) e2e tier
+```
+
+`make dist` produces the deployable `dist/virtweb-linux-amd64` binary.
+**Stub-green is not release-green** — the real libvirt tier must actually
+run before a release. The real (libvirt) tier needs podman + gcc and is
+slow (TCG boot), so run `make release` rather than on every build.
+
 ## Layout
 
 ```
