@@ -95,9 +95,17 @@ class ChannelSocket {
 
 const cfg = JSON.parse(document.getElementById('vnc-cfg').textContent);
 const statusEl = document.getElementById('vnc-status');
+const reconnectBtn = document.getElementById('vnc-reconnect');
+if (reconnectBtn) reconnectBtn.addEventListener('click', () => location.reload());
+function vncStatus(msg, { failed = false, reconnect = false } = {}) {
+  statusEl.textContent = msg;
+  statusEl.classList.toggle('status-err', failed);
+  if (reconnectBtn) reconnectBtn.hidden = !reconnect;
+}
 
 if (!cfg.streamUrl) {
-  statusEl.textContent = cfg.reason || 'VNC is not available for this VM.';
+  // A static condition — reloading won't enable VNC, so no Reconnect.
+  vncStatus(cfg.reason || 'VNC is not available for this VM.', { reconnect: false });
   throw new Error('no VNC available'); // stop the module
 }
 
@@ -113,10 +121,16 @@ const rfb = new RFB(document.getElementById('vnc'), new ChannelSocket(ch), {
 window.__rfb = rfb; // e2e hook
 
 rfb.addEventListener('connect', () => {
-  statusEl.textContent = 'Connected.';
+  vncStatus('Connected.', { reconnect: false });
 });
 rfb.addEventListener('disconnect', (e) => {
-  statusEl.textContent = e.detail.clean ? 'Disconnected.' : 'Connection lost.';
+  // noVNC does not auto-reconnect (disconnected is a permanent state),
+  // so surface the reason and offer a manual reconnect.
+  const clean = e.detail.clean;
+  vncStatus(
+    clean ? 'Disconnected.' : 'Connection lost — the connection was dropped.',
+    { failed: !clean, reconnect: true },
+  );
 });
 rfb.addEventListener('credentials-required', (e) => {
   const pw = window.prompt(e.detail?.title || 'VNC password:');

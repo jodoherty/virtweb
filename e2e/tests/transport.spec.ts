@@ -239,11 +239,14 @@ test('vnc page: noVNC over the tunnel (transport smoke)', async ({ page }) => {
   await expect(page.locator('#vnc-status')).toContainText(/Connection lost|Disconnected/, {
     timeout: 15_000,
   });
-  // And a VM without a VNC port gets the disabled page.
+  // noVNC never auto-reconnects, so a failed/lost session offers Reconnect.
+  await expect(page.locator('#vnc-reconnect')).toBeVisible();
+  // And a VM without a VNC port gets the disabled page (no Reconnect).
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/vnc`);
   await expect(page.locator('#vnc-status')).toContainText(
     'VNC is not enabled on this VM',
   );
+  await expect(page.locator('#vnc-reconnect')).toBeHidden();
   await page.close();
 });
 
@@ -259,5 +262,7 @@ test('spice page: fork over the tunnel (transport smoke)', async ({ page }) => {
   await expect(page.locator('#spice-status')).toContainText(/magic mismatch/, {
     timeout: 15_000,
   });
+  // A failed SPICE connect offers Reconnect.
+  await expect(page.locator('#spice-reconnect')).toBeVisible();
   await page.close();
 });

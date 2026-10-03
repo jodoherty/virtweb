@@ -6,6 +6,13 @@ import { SpiceMainConn } from '/spice/src/main.js';
 
 const cfg = JSON.parse(document.getElementById('spice-cfg').textContent);
 const statusEl = document.getElementById('spice-status');
+const reconnectBtn = document.getElementById('spice-reconnect');
+if (reconnectBtn) reconnectBtn.addEventListener('click', () => location.reload());
+function spiceStatus(msg, { failed = false, reconnect = false } = {}) {
+  statusEl.textContent = msg;
+  statusEl.classList.toggle('status-err', failed);
+  if (reconnectBtn) reconnectBtn.hidden = !reconnect;
+}
 
 document.getElementById('spice-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -15,14 +22,16 @@ document.getElementById('spice-form').addEventListener('submit', (e) => {
   // normally listens); anything else is taken as host:port.
   if (/^\d+$/.test(addr)) addr = '127.0.0.1:' + addr;
   const p = '?target=' + encodeURIComponent(addr);
-  statusEl.textContent = 'Connecting…';
+  spiceStatus('Connecting…', { reconnect: false });
   new SpiceMainConn({
     uri: cfg.tunnelBase + '/stream' + p,
     inputUri: cfg.tunnelBase + '/input' + p,
     password: q.get('password') || '',
     screen_id: 'spice',
     message_id: 'spice-messages',
-    onsuccess: () => { statusEl.textContent = 'Connected.'; },
-    onerror: (err) => { statusEl.textContent = 'SPICE error: ' + err.message; },
+    onsuccess: () => { spiceStatus('Connected.', { reconnect: false }); },
+    onerror: (err) => {
+      spiceStatus('SPICE error: ' + err.message, { failed: true, reconnect: true });
+    },
   });
 });
