@@ -1219,11 +1219,12 @@ SpiceDisplayConn.prototype.hook_events = function()
         canvas.addEventListener('wheel', Inputs.handle_mousewheel);
         canvas.focus();
 
-        this.focusListener = () => this.parent.send_clipboard_grab()
-        // send host clipboard when the canvas is rendered initially
-        this.focusListener();
-        // register focus event to grab host clipboard when the canvas gets focus
-        canvas.addEventListener('focus', this.focusListener);
+        /* virtweb delta: upstream also grabbed the host clipboard here
+           (on initial render and on every canvas focus) — background
+           clipboard sync. Clipboard is now an explicit user action (the
+           Copy / Paste buttons), so the focus-based grab is removed. The
+           canvas.focus() above stays: it is what routes keystrokes to
+           the guest. */
     }
 }
 
@@ -1241,7 +1242,6 @@ SpiceDisplayConn.prototype.unhook_events = function()
         canvas.removeEventListener('mouseout', handle_mouseout);
         canvas.removeEventListener('mouseover', handle_mouseover);
         canvas.removeEventListener('wheel', Inputs.handle_mousewheel);
-        canvas.removeEventListener('focus', this.focusListener);
     }
 }
 

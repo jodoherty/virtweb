@@ -342,7 +342,11 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
         }
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD_RELEASE)
         {
-            // Currently we don't need to do anything when the agent releases the clipboard
+            // Currently we don't need to do anything when the agent releases the clipboard;
+            // virtweb delta: drop any pending explicit operation so a stale flag
+            // cannot consume a later spontaneous push.
+            this.clipboard_copy_pending = false;
+            this.clipboard_paste_text = null;
             return true;
         }
 
@@ -626,61 +630,98 @@ SpiceMainConn.prototype.report_unhandled_agent_message = function(type)
 
 SpiceMainConn.prototype.handle_clipboard_grab = function()
 {
-    DEBUG > 1 && console.log("handling clipboard grab from agent");
-
-    // agent is requesting clipboard grab, so we send a message to request clipboard contents
-    const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
-    const clipboard_request = new Messages.SpiceMsgClipboardRequest(type, this.agent_caps);
-    this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_REQUEST, clipboard_request);
+    /* virtweb delta: the guest is claiming its clipboard. Upstream
+       immediately requests the guest's contents and writes them to the
+       host clipboard — background sync on every guest focus change. That
+       made the page call the Clipboard API with no user action, which on
+       Firefox surfaces a stray "Paste" affordance in the browser UI
+       (over the page and even the browser toolbar). Clipboard is now an
+       explicit user action (the Copy / Paste buttons); just note the
+       grab. */
+    DEBUG > 1 && console.log("guest claims clipboard (no auto-sync)");
 }
 
 SpiceMainConn.prototype.handle_clipboard_receive = function(agent_data)
 {
     DEBUG > 1 && console.log("received clipboard data from agent");
 
-    // received clipboard data from agent, copy it to browser clipboard
     const received_clipboard = new Messages.SpiceMsgClipboardReceive(agent_data, this.agent_caps);
-    if (received_clipboard.type === Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT)
-    {
-        // write it to the browser clipboard
-        if (navigator.clipboard && navigator.clipboard.writeText)
-        {
-            const text = received_clipboard.get_text();
-            navigator.clipboard.writeText(text).catch(err => {
-                console.warn("Failed to write to navigator clipboard:", err);
-            });
-        }
-    }
-    else
+    if (received_clipboard.type !== Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT)
     {
         console.log("Unsupported clipboard type:", received_clipboard.type);
+        return;
+    }
+    /* virtweb delta: write to the host clipboard only when the user
+       explicitly asked for a copy (the Copy button sets
+       clipboard_copy_pending). A spontaneous guest push is ignored — no
+       background sync. */
+    if (!this.clipboard_copy_pending)
+        return;
+    this.clipboard_copy_pending = false;
+
+    if (navigator.clipboard && navigator.clipboard.writeText)
+    {
+        const text = received_clipboard.get_text();
+        navigator.clipboard.writeText(text).catch(err => {
+            console.warn("Failed to write to navigator clipboard:", err);
+        });
     }
 }
 
 SpiceMainConn.prototype.handle_clipboard_send = function()
 {
-    DEBUG > 1 && console.log("sending clipboard data to agent");
+    DEBUG > 1 && console.log("agent requesting clipboard data");
 
-    /* virtweb delta: guests (e.g. KWin on focus changes) request the
-       clipboard without any user action, and browsers — Firefox in
-       particular — only permit programmatic reads during a transient
-       user activation. Skip instead of logging a rejection for every
-       unsolicited request; with a real user gesture the read below
-       proceeds as before. */
-    if (navigator.userActivation && !navigator.userActivation.isActive)
+    /* virtweb delta: the guest is asking for the host clipboard. Upstream
+       read the host clipboard and sent it — background sync on every
+       guest focus change. Now we only answer when the user explicitly
+       pasted (the Paste button stages clipboard_paste_text). An
+       unsolicited request is ignored: the host clipboard is no longer
+       read in the background. */
+    if (!this.clipboard_paste_text)
         return;
+    const text = this.clipboard_paste_text;
+    this.clipboard_paste_text = null;
+    const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
+    const clipboard_msg = new Messages.SpiceMsgClipboardSend(type, text, this.agent_caps);
+    this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clipboard_msg);
+}
 
-    // agent is requesting clipboard data, read it from browser clipboard and send it.
-    if (navigator.clipboard && navigator.clipboard.readText)
+/* virtweb delta: explicit clipboard operations, replacing upstream's
+   background sync.
+
+   copy_remote_clipboard: pull the guest's clipboard into the host —
+   request the guest's contents; when they arrive, handle_clipboard_
+   receive writes them to the local clipboard (writeText needs no user
+   activation, so the async callback is fine).
+
+   paste_to_remote_clipboard: push the host clipboard into the guest —
+   readText during the button click's user activation (the only time
+   Firefox permits it), stage the text, and claim the clipboard; the
+   guest's resulting request is answered by handle_clipboard_send with
+   the staged text. */
+SpiceMainConn.prototype.copy_remote_clipboard = function()
+{
+    this.clipboard_copy_pending = true;
+    const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
+    const clipboard_request = new Messages.SpiceMsgClipboardRequest(type, this.agent_caps);
+    this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_REQUEST, clipboard_request);
+}
+
+SpiceMainConn.prototype.paste_to_remote_clipboard = function()
+{
+    if (!navigator.clipboard || !navigator.clipboard.readText)
     {
-        navigator.clipboard.readText().then(text => {
-            const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
-            const clipboard_msg = new Messages.SpiceMsgClipboardSend(type, text, this.agent_caps);
-            this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clipboard_msg);
-        }).catch(err => {
-            console.debug("Failed to read clipboard:", err);
-        });
+        console.warn("Clipboard API not available; cannot paste.");
+        return;
     }
+    const self = this;
+    navigator.clipboard.readText().then(function(text) {
+        self.clipboard_paste_text = text;
+        self.send_clipboard_grab();
+    }).catch(function(err) {
+        console.warn("Failed to read local clipboard:", err);
+    });
 }
 
 SpiceMainConn.prototype.send_clipboard_grab = function()

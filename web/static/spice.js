@@ -64,6 +64,33 @@ document.getElementById('spice-fullscreen')?.addEventListener('click', () => {
   else main.requestFullscreen?.();
 });
 
+// Clipboard: explicit operations. The fork no longer syncs the clipboard
+// in the background (that made the page call the Clipboard API on every
+// guest focus change with no user action — on Firefox that surfaced a
+// stray "Paste" affordance in the browser UI). Copy pulls the guest
+// clipboard into the local one; Paste pushes the local clipboard into
+// the guest. Both need a live session with the guest agent connected.
+function clipboardConn() {
+  const sp = window.__spice;
+  if (!sp || !sp.agent_connected) {
+    spiceStatus('Not connected — the guest clipboard is unavailable.', { failed: true });
+    return null;
+  }
+  return sp;
+}
+document.getElementById('spice-copy')?.addEventListener('click', () => {
+  const sp = clipboardConn();
+  if (!sp) return;
+  sp.log_info('Copy: requesting the guest clipboard…');
+  sp.copy_remote_clipboard();
+});
+document.getElementById('spice-paste')?.addEventListener('click', () => {
+  const sp = clipboardConn();
+  if (!sp) return;
+  sp.log_info('Paste: sending the local clipboard to the guest…');
+  sp.paste_to_remote_clipboard();
+});
+
 // --------------------------------------------------------------------
 // Viewer preferences. Guest resize and zoom persist per browser in
 // localStorage: they are display habits, not per-VM state. Audio does
