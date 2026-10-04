@@ -55,13 +55,20 @@ function SpiceStream(o)
         self._emit("close", { code: 1006, reason: String(e.message || e) });
     });
 
-    // Downlink: ReadableStream chunks -> 'message' events. The
+    // Downlink: Readlink chunks -> 'message' events. The
     // SpiceWireReader reassembles them into protocol messages exactly
     // as it would WebSocket messages.
     (async function() {
         try {
             for await (const value of ch.readable) {
-                self._emit("message", { data: value });
+                // DuplexChannel yields Uint8Arrays; WebSocket 'message'
+                // events carry ArrayBuffers (binaryType "arraybuffer"),
+                // and the fork's wire reader builds DataView over them.
+                // Copy into a fresh ArrayBuffer so no shared backing
+                // buffer is ever exposed.
+                var ab = new ArrayBuffer(value.byteLength);
+                new Uint8Array(ab).set(value);
+                self._emit("message", { data: ab });
             }
             if (self.readyState !== 3) {
                 self.readyState = 3;

@@ -39,7 +39,11 @@ function SpiceWireReader(sc, callback)
 
     this.sc.ws.wire_reader = this;
     this.sc.ws.binaryType = "arraybuffer";
-    this.sc.ws.addEventListener('message', wire_blob_catcher);
+    /* Fork: bind the receiver explicitly. Upstream relied on the
+       WebSocket setting the listener's `this` to the target;
+       SpiceStream dispatches with `this` = the stream, which broke
+       `this.wire_reader` inside the handler. */
+    this.sc.ws.addEventListener('message', wire_blob_catcher.bind(this.sc.ws));
 }
 
 SpiceWireReader.prototype =

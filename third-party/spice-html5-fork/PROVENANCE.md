@@ -22,15 +22,14 @@ commits touching this directory *are* the fork's history.
 
 | File | Change |
 |---|---|
-| `src/spicestream.js` | **new** — `SpiceStream`, the WebSocket-shaped channel over virtweb's `DuplexChannel` (`web/static/duplex.js`, chunked flushed GET + ordered POST uplink). The downlink's terminal state (wire protocol v2: a SESSION_ERROR frame or a transport failure) is reported through an `error` event before the `close`, so the page's onerror shows the server's message |
-| `src/spiceconn.js` | `SpiceConn` constructs `SpiceStream` instead of `WebSocket`; dropped the synchronous `readyState` connect check (the stream opens asynchronously; failures come through error/close); `send_msg` coalesces frames per animation tick (one atomic uplink chunk per tick — the spice stream accepts concatenated messages; this is the ordering + POST-rate guarantee); `cleanup` discards pending frames |
+| `src/spicestream.js` | **new** — `SpiceStream`, the WebSocket-shaped channel over virtweb's `DuplexChannel` (`web/static/duplex.js`, chunked flushed GET + ordered POST uplink). `message` events carry **fresh ArrayBuffers** (WebSocket `binaryType: arraybuffer` semantics; the fork's wire reader builds DataView over them — the DuplexChannel's Uint8Array payloads are copied). The downlink's terminal state (wire protocol v2: a SESSION_ERROR frame or a transport failure) is reported through an `error` event before the `close`, so the page's onerror shows the server's message |
+| `src/spiceconn.js` | `SpiceConn` constructs `SpiceStream` instead of `WebSocket`; dropped the synchronous `readyState` connect check (the stream opens asynchronously; failures come through error/close); `send_msg` coalesces frames per animation tick (one atomic uplink chunk per tick — the spice stream accepts concatenated messages; this is the ordering + POST-rate guarantee); `cleanup` discards pending frames; the `error` listener's `e.target` access is guarded (SpiceStream's error events are plain objects, not DOM events, and `'url' in e.target` threw uncaught) |
 | `src/main.js` | child channels clone `inputUri: this.ws.inputUrl` alongside `uri`; `SpiceMainConn` wraps the page's `onerror` so a main-channel failure tears the sibling channels down first (`close_sibling_channels` — without it their tunnels, one ssh -W session each, persist until page close) |
 | `src/inputs.js` | `WebSocket.OPEN` → literal `1` (SpiceStream keeps the numeric readyState) |
+| `src/wire.js` | the wire reader's `message` listener is `bind(this.sc.ws)`'d. **Latent upstream bug, exposed by the transport seam**: upstream registers `wire_blob_catcher` without an explicit receiver, which only works because a real WebSocket dispatches `message` events with `this` = the WebSocket; SpiceStream dispatches with `this` = the stream, so `this.wire_reader` resolved to `undefined` and every inbound protocol message was dropped (`inbound` was never called — the connection sat at "Connecting…" until its handshake timeout). Against a real WebSocket this fix is a no-op |
 
 Untouched: everything else (display, cursor, playback, filexfer,
-wire reader, protocol code) is byte-identical to the upstream base.
-`wire.js` needs no change: it only uses `binaryType` and
-`addEventListener('message')`, which SpiceStream provides.
+protocol code) is byte-identical to the upstream base.
 
 ## Re-basing on upstream
 

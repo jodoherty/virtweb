@@ -106,7 +106,7 @@ function SpiceConn(o)
         this.parent.state = "start";
     });
     this.ws.addEventListener('error', function(e) {
-        if ('url' in e.target) {
+        if (e.target && 'url' in e.target) {
             this.parent.log_err("WebSocket error: Can't connect to websocket on URL: " + e.target.url);
         }
         this.parent.report_error(e);
