@@ -41,10 +41,10 @@ vet:
 # `env:up` is idempotent; the stub tier is fast/offline, the libvirt tier
 # spins up a rootless-podman libvirt host (needs podman + gcc) and is slow.
 e2e-stub:
-	cd e2e && npm run env:up -- --backend stub && npx playwright test --project=stub
+	cd e2e && npm run env:up -- --backend stub && npx playwright test --project=stub --project=stub-firefox
 
 e2e-libvirt:
-	cd e2e && npm run env:up -- --backend libvirt && npx playwright test --project=libvirt
+	cd e2e && npm run env:up -- --backend libvirt && npx playwright test --project=libvirt --project=libvirt-firefox
 
 # Reverse-proxy axis: the stub suite behind each real proxy (HAProxy and
 # Traefik, L7 and L4). Verifies the streaming responses survive real

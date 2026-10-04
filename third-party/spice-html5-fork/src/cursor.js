@@ -58,7 +58,25 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
             this.parent.inputs.mousex = cursor_init.position.x;
             this.parent.inputs.mousey = cursor_init.position.y;
         }
-        // FIXME - We don't handle most of the parameters here...
+        /* virtweb delta: INIT carries the CURRENT cursor shape
+           (SpiceCursor, per the protocol — "the server sends
+           SPICE_MSG_CURSOR_INIT to set current pointer state (i.e.,
+           shape, position, visibility)"), and QEMU sends the initial
+           shape ONLY there: a separate CURSOR_SET arrives later just
+           when the guest CHANGES the shape. Upstream discards the
+           shape ("we don't handle most of the parameters"), so the
+           default arrow — the shape active when the channel opens —
+           was never rendered, while every later shape change
+           (hourglass, resize, ...) was: the client showed real
+           cursors only for the non-default ones. Apply it like a
+           SET; honour the visible flag. */
+        if (cursor_init.cursor)
+        {
+            if (cursor_init.visible)
+                this.set_cursor(cursor_init.cursor);
+            else
+                this.hide_cursor();
+        }
         return true;
     }
 

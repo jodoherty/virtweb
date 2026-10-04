@@ -53,7 +53,15 @@ export default defineConfig({
   projects: [
     // Tier 0: deterministic stub backend (the default, offline).
     { name: 'stub', testIgnore: /\.real\.spec\.ts$/ },
+    // Same specs on Firefox: the production browsers include Firefox and
+    // it diverges from Chromium on the transport (same-URL in-flight GET
+    // queueing, see doc/TRANSPORT.md) and on CSS cursor handling; the stub
+    // tier is where those regressions are cheapest to catch.
+    { name: 'stub-firefox', use: { browserName: 'firefox' },
+      testIgnore: /\.real\.spec\.ts$/ },
     // Tier 2: real libvirt podman host (@real specs only).
     { name: 'libvirt', testMatch: /\.real\.spec\.ts$/ },
+    { name: 'libvirt-firefox', use: { browserName: 'firefox' },
+      testMatch: /\.real\.spec\.ts$/ },
   ],
 });

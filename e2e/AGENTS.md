@@ -121,14 +121,19 @@ ssh -tt -p <sshPort> root@127.0.0.1 'virsh console vw-e2e-guest'    # interactiv
 
 Guest login: `root` / `vw-e2e-pass` (set via the config drive).
 
-## The two Playwright projects
+## The Playwright projects
 
-`playwright.config.ts` defines two projects; `workers:1`,
+`playwright.config.ts` defines two tiers × two browsers; `workers:1`,
 `fullyParallel:false` (all specs mutate the same VMs, so they must run
 one at a time):
 
-- `stub` — every spec **except** `*.real.spec.ts`.
-- `libvirt` — **only** `*.real.spec.ts`.
+- `stub` / `stub-firefox` — every spec **except** `*.real.spec.ts`, on
+  Chromium and Firefox. Firefox runs because it is one of the
+  production browsers and it diverges from Chromium on the transport
+  (same-URL in-flight GET queueing — see `doc/TRANSPORT.md`) and on CSS
+  cursor handling; the stub tier is where those regressions are
+  cheapest to catch.
+- `libvirt` / `libvirt-firefox` — **only** `*.real.spec.ts`.
 
 Spec files:
 

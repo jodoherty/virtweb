@@ -22,6 +22,9 @@ The e2e suite is a self-contained Node/Playwright project in `e2e/`
 with two backend tiers:
 
 - **stub** — fast, offline, deterministic (the bulk of the specs).
+  Runs on both Chromium and Firefox (`stub` / `stub-firefox`
+  projects): Firefox is a production browser and diverges on the
+  transport and on CSS cursor handling.
 - **libvirt** (`@real`) — a rootless-podman libvirt container acting as
   the remote host, exercising the real ssh/virsh/transport path.
 
