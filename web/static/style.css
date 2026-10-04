@@ -15,6 +15,7 @@ body {
   font-family: system-ui, -apple-system, sans-serif;
   background: var(--bg);
   color: var(--fg);
+  color-scheme: dark;
 }
 
 header {
@@ -101,14 +102,6 @@ td.actions > * { margin-right: 0.3rem; }
 }
 .add-server h2 { margin-top: 0; }
 .add-server .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.add-server input {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.35rem 0.5rem;
-  min-width: 110px;
-}
 .add-server button { margin-top: 0.6rem; }
 
 /* server edit (collapsed panel on the server page) */
@@ -121,39 +114,7 @@ td.actions > * { margin-right: 0.3rem; }
 }
 .edit-server summary { cursor: pointer; color: var(--muted); }
 .edit-server .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
-.edit-server input {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.35rem 0.5rem;
-  min-width: 110px;
-}
 .edit-server button { margin-top: 0.6rem; }
-
-/* define-VM-from-XML panel (collapsed on the server page) */
-.define-vm {
-  margin-top: 0.5rem;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.6rem 1rem;
-}
-.define-vm summary { cursor: pointer; color: var(--muted); }
-.define-vm textarea {
-  display: block;
-  margin-top: 0.6rem;
-  width: 100%;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem;
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
-}
-.define-vm .start-label { display: inline-block; margin-top: 0.5rem; color: var(--muted); }
-.define-vm button { margin-top: 0.5rem; margin-left: 0.5rem; }
 
 /* serial console */
 .console-term {
@@ -193,7 +154,8 @@ td.actions > * { margin-right: 0.3rem; }
 .vm-info td.running { color: var(--ok, #1a7f37); font-weight: bold; }
 .vm-info td.stopped { color: var(--muted); }
 .vm-xml {
-  background: #f6f8fa;
+  background: var(--panel);
+  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.6rem;
@@ -211,10 +173,19 @@ td.actions > * { margin-right: 0.3rem; }
 }
 #copy-xml:hover { border-color: var(--accent); color: var(--accent); }
 
+input, textarea {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+input::placeholder, textarea::placeholder { color: var(--muted); }
+
 .keybox {
   width: 100%;
   box-sizing: border-box;
-  font-family: monospace;
-  font-size: 12px;
-  margin: 0.5em 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  margin: 0.5rem 0;
 }
