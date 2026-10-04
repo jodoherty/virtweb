@@ -159,7 +159,10 @@ Once a server is added, its page lists every domain with state, vCPUs,
 memory, IP (from `domifaddr`), and — for a running domain — its live
 display address. Click a VM's name for its **detail page**: live state,
 resource info, display addresses, the usual actions, and the current
-domain XML (`virsh dumpxml`) with a copy button. Row actions on the
+domain XML (`virsh dumpxml`), rendered as a collapsible tree inside a
+scrollable, height-bounded box (the root element open, everything
+else collapsed; the "Raw" toggle shows the byte-exact text, which is
+what the copy button copies). Row actions on the
 The server page's VM table is a *view*: state, resources, IP, and
 links to open a VM's console / VNC / SPICE page — no actions in the
 table. All actions live on the VM's detail page, where only the

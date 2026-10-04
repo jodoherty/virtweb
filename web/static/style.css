@@ -153,16 +153,34 @@ td.actions > * { margin-right: 0.3rem; }
 .vm-info td { padding: 0.25rem 0; }
 .vm-info td.running { color: var(--ok, #1a7f37); font-weight: bold; }
 .vm-info td.stopped { color: var(--muted); }
-.vm-xml {
+.vm-xml-wrap {
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.6rem;
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 16rem; /* the domain XML is a reference, not a page —
+                        keep it to a bounded, scrollable area */
   font-size: 0.85rem;
   line-height: 1.4;
 }
+.vm-xml {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  overflow: auto;
+  font-size: inherit;
+  line-height: inherit;
+}
+.vm-xml-tree ul { margin: 0; padding-left: 1.4rem; }
+.vm-xml-tree summary { cursor: pointer; }
+.vm-xml-tree summary:hover { color: var(--accent); }
+.xml-tag { color: var(--accent); }
+.xml-attrs { color: var(--muted); }
+.xml-text { color: var(--fg); }
+.xml-leaf { padding-left: 0.2rem; }
 #copy-xml {
   border: 1px solid var(--border);
   border-radius: 4px;

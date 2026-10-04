@@ -35,7 +35,9 @@ var testWeb = fstest.MapFS{
 			`{{if .VM.VNCPort}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/vnc">vnc</a>{{end}}` +
 			`{{if .VM.SpiceAddr}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/spice">spice</a>{{end}}{{end}}` +
 			`</section>` +
-			`<pre id="vm-xml">{{.XML}}</pre>` +
+			`<button id="xml-toggle">Raw</button>` +
+			`<div class="vm-xml-wrap"><div class="vm-xml-tree" id="vm-xml-tree"></div>` +
+			`<pre id="vm-xml" hidden>{{.XML}}</pre></div>` +
 			`<section class="vm-actions">` +
 			`{{if .VM.Running}}` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/shutdown" data-confirm="Shut down?"></form>` +
@@ -395,6 +397,15 @@ func TestInterruptActionsConfirmed(t *testing.T) {
 	if di, xi, ai := strings.Index(b, "vm-displays"), strings.Index(b, "vm-xml"), strings.Index(b, "vm-actions");
 		di < 0 || xi < 0 || ai < 0 || di > xi || xi > ai {
 		t.Fatalf("detail page: order must be displays < xml < actions (displays=%d xml=%d actions=%d)", di, xi, ai)
+	}
+
+	// the domain XML is served both as the collapsible-tree container
+	// (rendered client-side from the raw text) and as the exact raw
+	// text, with the toggle between the two.
+	for _, frag := range []string{"vm-xml-wrap", "vm-xml-tree", `id="vm-xml" hidden`, "xml-toggle"} {
+		if !strings.Contains(b, frag) {
+			t.Fatalf("detail page: missing %q", frag)
+		}
 	}
 
 	// the listing has no actions at all — state and links only

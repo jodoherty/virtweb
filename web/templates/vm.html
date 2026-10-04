@@ -21,9 +21,14 @@
   <p class="muted">The VM is shut off. Start it to use its displays.</p>
   {{end}}
 </section>
-<h3>Domain XML <button type="button" id="copy-xml" class="muted">Copy</button></h3>
+<h3>Domain XML
+  <button type="button" id="copy-xml" class="muted">Copy</button>
+  <button type="button" id="xml-toggle" class="muted">Raw</button></h3>
 {{if .XML}}
-<pre class="vm-xml" id="vm-xml">{{.XML}}</pre>
+<div class="vm-xml-wrap">
+  <div class="vm-xml-tree" id="vm-xml-tree"></div>
+  <pre class="vm-xml" id="vm-xml" hidden>{{.XML}}</pre>
+</div>
 {{else}}
 <p class="muted">XML unavailable (see banner above).</p>
 {{end}}

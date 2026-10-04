@@ -177,12 +177,42 @@ test('VM detail page shows live info and the domain XML', async ({ page }) => {
   // destructive) is boxed at the very bottom — more than 200px away
   // from the display links.
   const displaysBox = await page.locator('.vm-displays').boundingBox();
-  const xmlBox = await page.locator('#vm-xml').boundingBox();
+  const xmlBox = await page.locator('.vm-xml-wrap').boundingBox();
   const actionsBox = await page.locator('.vm-actions').boundingBox();
   expect(displaysBox && xmlBox && actionsBox).toBeTruthy();
   expect(displaysBox!.y).toBeLessThan(xmlBox!.y);
   expect(xmlBox!.y).toBeLessThan(actionsBox!.y);
   expect(actionsBox!.y - displaysBox!.y).toBeGreaterThan(200);
+
+  // Domain XML: rendered as a collapsible tree — the root element is
+  // open, its children collapsed — inside a bounded scrollable box;
+  // the "Raw" toggle reveals the byte-exact text (what Copy copies).
+  const rootDet = page.locator('.vm-xml-tree > details');
+  await expect(rootDet).toBeVisible();
+  await expect(rootDet.locator('> summary')).toHaveText(/domain/);
+  await expect(rootDet).toHaveAttribute('open', '');
+  const childCount = await rootDet.locator('> ul > details').count();
+  expect(childCount).toBeGreaterThan(0);
+  // every nested node starts collapsed (open details: root + zero)
+  await expect(page.locator('.vm-xml-tree details[open]')).toHaveCount(1);
+  // expand a child element: its own children become visible
+  const devicesSummary = rootDet.locator('.xml-tag', { hasText: 'devices' }).locator('xpath=..');
+  await devicesSummary.click();
+  await expect(devicesSummary.locator('xpath=following-sibling::ul[1]')).toBeVisible();
+  // the box is height-bounded
+  const wrapStyle = await page.locator('.vm-xml-wrap')
+    .evaluate((el) => getComputedStyle(el).maxHeight);
+  expect(Number.parseFloat(wrapStyle)).toBeGreaterThan(0);
+  // Raw toggle: tree hides, the byte-exact pre shows (and vice versa)
+  await page.locator('#xml-toggle').click();
+  await expect(page.locator('#vm-xml')).toBeVisible();
+  await expect(page.locator('.vm-xml-tree')).toBeHidden();
+  await expect(page.locator('#xml-toggle')).toHaveText('Tree');
+  await expect(page.locator('#vm-xml')).toContainText("<domain type='kvm'>");
+  const wrapBox = await page.locator('.vm-xml-wrap').boundingBox();
+  expect(wrapBox!.height).toBeLessThanOrEqual(260); // 16rem = 256px + padding
+  await page.locator('#xml-toggle').click();
+  await expect(rootDet).toBeVisible();
 
   // The Refresh link re-renders the same page.
   await page.locator('a.btn[href$="/vms/debian-dev"]').click();
