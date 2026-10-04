@@ -82,14 +82,32 @@ document.getElementById('spice-copy')?.addEventListener('click', () => {
   const sp = clipboardConn();
   if (!sp) return;
   sp.log_info('Copy: requesting the guest clipboard…');
-  sp.copy_remote_clipboard();
+  sp.copy_remote_clipboard((r) => clipboardFeedback('spice-copy', 'Copy', r));
 });
 document.getElementById('spice-paste')?.addEventListener('click', () => {
   const sp = clipboardConn();
   if (!sp) return;
   sp.log_info('Paste: sending the local clipboard to the guest…');
-  sp.paste_to_remote_clipboard();
+  sp.paste_to_remote_clipboard((r) => clipboardFeedback('spice-paste', 'Paste', r));
 });
+// Brief, visible confirmation on the button itself (the clipboard effect is
+// otherwise invisible), plus a line in the Log panel. The button label
+// returns to its original text after a moment.
+function clipboardFeedback(id, label, r) {
+  const btn = document.getElementById(id);
+  const sp = window.__spice;
+  if (!btn) return;
+  const orig = btn.textContent;
+  let msg, log;
+  if (r && r.ok) { msg = '✓ ' + label + ' (' + r.chars + ')'; log = label + ': ok (' + r.chars + ' chars)'; }
+  else if (r && r.empty) {
+    msg = label === 'Copy' ? 'Guest clipboard empty' : 'Local clipboard empty';
+    log = label + ': nothing to send';
+  } else { msg = label + ': ' + (r && r.error ? r.error : 'failed'); log = label + ': ' + (r && r.error ? r.error : 'failed'); }
+  btn.textContent = msg;
+  sp?.log_info(log);
+  setTimeout(() => { if (btn.textContent === msg) btn.textContent = orig; }, 2500);
+}
 
 // --------------------------------------------------------------------
 // Viewer preferences. Guest resize and zoom persist per browser in
@@ -180,7 +198,12 @@ function applyAudio() {
   const a = window.__spice?.playback?.audio;
   if (!a) return;
   a.muted = !settings.audio;
-  if (settings.audio && a.paused) a.play().catch(() => {});
+  // Keep the element playing. Firefox will not auto-start a muted
+  // MediaSource the way Chromium does (it stays paused); muted playback
+  // needs no user activation, so priming it here — on element creation —
+  // is safe, and the toggle then only flips `muted`. Chromium already
+  // auto-starts it, so this is a no-op there.
+  if (a.paused) a.play().catch(() => {});
 }
 new MutationObserver(applyAudio).observe(screenEl, { childList: true });
 audioTgl.addEventListener('change', () => {

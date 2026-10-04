@@ -347,6 +347,8 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             // cannot consume a later spontaneous push.
             this.clipboard_copy_pending = false;
             this.clipboard_paste_text = null;
+            if (this.clipboard_copy_timer) { clearTimeout(this.clipboard_copy_timer); this.clipboard_copy_timer = null; }
+            if (this.clipboard_copy_cb) { const c = this.clipboard_copy_cb; this.clipboard_copy_cb = null; c({ ok: false, empty: true }); }
             return true;
         }
 
@@ -658,13 +660,25 @@ SpiceMainConn.prototype.handle_clipboard_receive = function(agent_data)
     if (!this.clipboard_copy_pending)
         return;
     this.clipboard_copy_pending = false;
+    if (this.clipboard_copy_timer) { clearTimeout(this.clipboard_copy_timer); this.clipboard_copy_timer = null; }
 
     if (navigator.clipboard && navigator.clipboard.writeText)
     {
         const text = received_clipboard.get_text();
-        navigator.clipboard.writeText(text).catch(err => {
+        const c = this.clipboard_copy_cb;
+        this.clipboard_copy_cb = null;
+        navigator.clipboard.writeText(text).then(() => {
+            if (c) c({ ok: true, chars: text.length });
+        }).catch(err => {
             console.warn("Failed to write to navigator clipboard:", err);
+            if (c) c({ ok: false, error: 'Could not write to the local clipboard' });
         });
+    }
+    else if (this.clipboard_copy_cb)
+    {
+        const c = this.clipboard_copy_cb;
+        this.clipboard_copy_cb = null;
+        c({ ok: false, error: 'Clipboard API unavailable' });
     }
 }
 
@@ -700,27 +714,56 @@ SpiceMainConn.prototype.handle_clipboard_send = function()
    Firefox permits it), stage the text, and claim the clipboard; the
    guest's resulting request is answered by handle_clipboard_send with
    the staged text. */
-SpiceMainConn.prototype.copy_remote_clipboard = function()
+SpiceMainConn.prototype.copy_remote_clipboard = function(cb)
 {
+    const self = this;
+    if (this.clipboard_copy_timer)
+    {
+        clearTimeout(this.clipboard_copy_timer);
+        this.clipboard_copy_timer = null;
+    }
+    this.clipboard_copy_cb = (typeof cb === 'function') ? cb : null;
     this.clipboard_copy_pending = true;
+    // The guest only answers a clipboard request if it currently owns the
+    // clipboard (the user copied something in the guest). If it has nothing,
+    // no reply comes — report that after a short wait.
+    this.clipboard_copy_timer = setTimeout(function()
+    {
+        self.clipboard_copy_timer = null;
+        if (!self.clipboard_copy_pending)
+            return; // the guest answered (or a release already cleared it)
+        self.clipboard_copy_pending = false;
+        const c = self.clipboard_copy_cb;
+        self.clipboard_copy_cb = null;
+        if (c) c({ ok: false, empty: true });
+    }, 1500);
     const type = Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT;
     const clipboard_request = new Messages.SpiceMsgClipboardRequest(type, this.agent_caps);
     this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_REQUEST, clipboard_request);
 }
 
-SpiceMainConn.prototype.paste_to_remote_clipboard = function()
+SpiceMainConn.prototype.paste_to_remote_clipboard = function(cb)
 {
+    const self = this;
+    const done = (r) => { if (typeof cb === 'function') cb(r); };
     if (!navigator.clipboard || !navigator.clipboard.readText)
     {
-        console.warn("Clipboard API not available; cannot paste.");
+        done({ ok: false, error: 'Clipboard API unavailable' });
         return;
     }
-    const self = this;
     navigator.clipboard.readText().then(function(text) {
+        if (!text)
+        {
+            done({ ok: false, empty: true });
+            return;
+        }
         self.clipboard_paste_text = text;
         self.send_clipboard_grab();
+        done({ ok: true, chars: text.length });
     }).catch(function(err) {
-        console.warn("Failed to read local clipboard:", err);
+        done({ ok: false, error: (err && err.name === 'NotAllowedError')
+            ? 'Clipboard read was blocked — allow it in the browser site settings'
+            : 'Could not read the local clipboard' });
     });
 }
 

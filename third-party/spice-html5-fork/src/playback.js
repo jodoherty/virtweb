@@ -36,6 +36,10 @@ function SpicePlaybackConn()
     this.queue = new Array();
     this.append_okay = false;
     this.start_time = 0;
+
+    // Fork: pending WebM fragments to append, batched (see schedule_flush).
+    this.pending = new Array();
+    this.flush_timer = null;
 }
 
 SpicePlaybackConn.prototype = Object.create(SpiceConn.prototype);
@@ -212,8 +216,15 @@ SpicePlaybackConn.prototype.destroy_audio = function()
     delete this.media_source;
     delete this.audio;
 
+    if (this.flush_timer)
+    {
+        clearTimeout(this.flush_timer);
+        this.flush_timer = null;
+    }
+
     this.append_okay = false;
     this.queue = new Array();
+    this.pending = new Array();
     this.start_time = 0;
 }
 
@@ -256,10 +267,7 @@ SpicePlaybackConn.prototype.new_cluster = function(data)
     var mb = new ArrayBuffer(c.buffer_size());
     this.bytes_written += c.to_buffer(mb);
 
-    if (this.append_okay)
-        playback_append_buffer(this, mb);
-    else
-        this.queue.push(mb);
+    playback_append_buffer(this, mb);
 
     this.simple_block(data, true);
 }
@@ -271,10 +279,7 @@ SpicePlaybackConn.prototype.simple_block = function(data, keyframe)
 
     this.bytes_written += sb.to_buffer(mb);
 
-    if (this.append_okay)
-        playback_append_buffer(this, mb);
-    else
-        this.queue.push(mb);
+    playback_append_buffer(this, mb);
 }
 
 function handle_source_open(e)
@@ -348,14 +353,9 @@ function handle_append_buffer_done(e)
     if (Utils.PLAYBACK_DEBUG > 1)
         playback_handle_event_debug.call(this, e);
 
-    if (p.queue.length > 0)
-    {
-        var mb = condense_playback_queue(p.queue);
-        playback_append_buffer(p, mb);
-    }
-    else
-        p.append_okay = true;
-
+    // The source buffer finished appending; flush anything that
+    // accumulated while it was busy so latency stays low.
+    flush_pending(p);
 }
 
 function handle_sourcebuffer_error(e)
@@ -366,10 +366,39 @@ function handle_sourcebuffer_error(e)
 
 function playback_append_buffer(p, b)
 {
+    // Accumulate; flush in batches (schedule_flush). Do NOT append per
+    // packet — see schedule_flush for why.
+    p.pending.push(b);
+    schedule_flush(p);
+}
+
+// Firefox will not start playing a segments-mode SourceBuffer fed with
+// per-packet (~10ms, ~250-byte) appends: the media engine sees a stream of
+// tiny fragments and parks the playhead at the auto-computed duration end
+// instead of playing (observed: play() resolves but the element stays
+// paused with currentTime NaN). Feeding coherent chunks (~every 200ms,
+// a few KB each) makes it play; Chromium tolerated either. So we buffer the
+// WebM fragments and flush them as larger appends on a short interval (and
+// immediately on updateend).
+function schedule_flush(p)
+{
+    if (p.flush_timer)
+        return;
+    p.flush_timer = setTimeout(function()
+    {
+        p.flush_timer = null;
+        flush_pending(p);
+    }, 200);
+}
+
+function flush_pending(p)
+{
+    if (!p.source_buffer || p.source_buffer.updating || p.pending.length === 0)
+        return;
+    var mb = condense_playback_queue(p.pending); // empties p.pending, returns merged
     try
     {
-        p.source_buffer.appendBuffer(b);
-        p.append_okay = false;
+        p.source_buffer.appendBuffer(mb);
     }
     catch (e)
     {
@@ -394,7 +423,7 @@ function playback_handle_event_debug(e)
         console.log("  source_buffer " + Utils.dump_source_buffer(p.source_buffer));
 
     if (Utils.PLAYBACK_DEBUG > 0 || p.queue.length > 1)
-        console.log('  queue len ' + p.queue.length + '; append_okay: ' + p.append_okay);
+        console.log('  queue len ' + p.pending.length + '; append_okay: ' + p.append_okay);
 }
 
 function playback_debug_listen_for_one_event(name)
