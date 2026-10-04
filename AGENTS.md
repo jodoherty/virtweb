@@ -41,11 +41,11 @@ Hard constraints (keep every change compliant):
 - **`e2e/`** is a self-contained Node/Playwright project; nodejs
   artifacts stay inside it. Its own rules live in `e2e/AGENTS.md`.
 
-Architecture package map, environment facts, workflow, and the broader
-project context (remote-host details, milestones) are documented in the
-parent directory's `AGENTS.md` and `TESTING.md` (outside this git
-repository; the host environment may not have them — treat them as
-absent and rely on this file plus `doc/` and `e2e/AGENTS.md`).
+The e2e suite's design rationale (tiers, the persistent environment,
+the reverse-proxy axis) is documented in the parent directory's
+`TESTING.md` (outside this git repository; the host environment may not
+have it — treat it as absent and rely on this file, `doc/`, and
+`e2e/AGENTS.md`).
 
 ## Definition of done
 

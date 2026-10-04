@@ -1,7 +1,7 @@
 // Package webui serves the server-rendered pages of virtweb: plain
 // HTML templates + forms (PRG redirects) for everything except the
 // serial console (xterm.js over the /api streams transport) and the
-// VNC viewer (noVNC, M6). The JSON API in internal/api remains for
+// VNC viewer (noVNC). The JSON API in internal/api remains for
 // automation and the e2e suite.
 //
 // The templates and static files live in the web/ directory, embedded
