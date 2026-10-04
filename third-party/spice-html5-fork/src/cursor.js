@@ -177,7 +177,13 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
             return true;
         }
 
-        if (cursor_set.cursor.flags > 0)
+        /* CACHE_ME / FROM_CACHE are handled below; only genuinely
+           unknown bits are a problem. (The upstream FIXME here
+           predates that handling.) */
+        if (cursor_set.cursor.flags &
+            ~(Constants.SPICE_CURSOR_FLAGS_NONE |
+              Constants.SPICE_CURSOR_FLAGS_CACHE_ME |
+              Constants.SPICE_CURSOR_FLAGS_FROM_CACHE))
             this.log_warn("FIXME: No support for cursor flags " + cursor_set.cursor.flags);
 
         /* An unconvertible shape is not an unhandled message: returning

@@ -15,9 +15,10 @@ test.beforeAll(async () => {
   serverId = m.serverId;
 });
 
-test('defaults: audio on, guest resize off, zoom 100%', async ({ page }) => {
+test('defaults: audio off, guest resize off, zoom 100%', async ({ page }) => {
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
-  await expect(page.locator('#spice-audio')).toBeChecked();
+  // Audio is a per-session opt-in: off on every fresh page open.
+  await expect(page.locator('#spice-audio')).not.toBeChecked();
   await expect(page.locator('#spice-guestresize')).not.toBeChecked();
   await expect(page.locator('#spice-zoom')).toHaveValue('100');
 });
@@ -68,9 +69,9 @@ test('zoom engine: canvas sized in logical px, relative to the fit', async ({
   expect(g100b.ch).toBe(g100.ch);
 });
 
-test('settings persist per browser', async ({ page }) => {
+test('settings persist per browser (except audio)', async ({ page }) => {
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
-  await page.locator('#spice-audio').uncheck();
+  await page.locator('#spice-audio').check();
   await page.locator('#spice-guestresize').check();
   await page.locator('#spice-zoom').selectOption('150');
   const ls = await page.evaluate(() =>
@@ -80,11 +81,64 @@ test('settings persist per browser', async ({ page }) => {
       localStorage.getItem('vw.spice.zoom'),
     ]),
   );
-  expect(ls).toBe(JSON.stringify(['0', '1', '150']));
+  // Audio is a per-session opt-in: it is never persisted, so the key
+  // stays null even after the toggle is checked.
+  expect(ls).toBe(JSON.stringify([null, '1', '150']));
   await page.reload();
+  // Audio back to off; resize and zoom remembered.
   await expect(page.locator('#spice-audio')).not.toBeChecked();
   await expect(page.locator('#spice-guestresize')).toBeChecked();
   await expect(page.locator('#spice-zoom')).toHaveValue('150');
+});
+
+test('zoom is not applied twice when the guest follows the resize', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
+  // Spy the MonConfig requests the page sends.
+  await page.evaluate(() => {
+    (window as any).__spice = {
+      calls: [] as number[][],
+      resize_window: (_f: number, w: number, h: number) =>
+        (window as any).__spice.calls.push([w, h]),
+    };
+  });
+  // 50% zoom with guest resize on: the page requests the area scaled
+  // 2x along each axis.
+  await page.locator('#spice-zoom').selectOption('50');
+  await page.locator('#spice-guestresize').check();
+  await page.waitForTimeout(100);
+  const req = await page.evaluate(() =>
+    (window as any).__spice.calls.at(-1) as [number, number],
+  );
+  // The guest "follows": its bitmap becomes the requested size.
+  await page.evaluate((r) => {
+    const c = document.createElement('canvas');
+    c.width = r[0];
+    c.height = r[1];
+    document.getElementById('spice')!.appendChild(c);
+  }, req);
+  await page.waitForTimeout(150); // observers settle
+  const g = await page.evaluate(() => {
+    const c = document.querySelector('#spice canvas') as HTMLCanvasElement;
+    const s = document.getElementById('spice')!;
+    return {
+      cw: c.clientWidth,
+      ch: c.clientHeight,
+      aw: s.clientWidth,
+      ah: s.clientHeight,
+      bw: c.width,
+      bh: c.height,
+    };
+  });
+  // Each guest px is 0.5 CSS px: the canvas FILLS the area (fitted at
+  // density, not fitted-then-shrunk by the zoom again — that would be
+  // a quarter of the area).
+  const fit = Math.min(g.aw / g.bw, g.ah / g.bh);
+  expect(g.cw).toBe(Math.round(g.bw * fit));
+  expect(g.ch).toBe(Math.round(g.bh * fit));
+  expect(g.cw).toBeGreaterThanOrEqual(g.aw * 0.98);
 });
 
 test('guest resize request is gated on the toggle', async ({ page }) => {

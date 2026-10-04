@@ -65,12 +65,14 @@ document.getElementById('spice-fullscreen')?.addEventListener('click', () => {
 });
 
 // --------------------------------------------------------------------
-// Viewer preferences (audio / guest resize / zoom), persisted per
-// browser in localStorage: they are the user's display habits, not
-// per-VM state.
+// Viewer preferences. Guest resize and zoom persist per browser in
+// localStorage: they are display habits, not per-VM state. Audio does
+// not: it is off by default on every page open, so enabling it is a
+// per-session opt-in — which also satisfies Firefox's autoplay policy
+// (checking the box is a user gesture).
 // --------------------------------------------------------------------
 const settings = {
-  audio: localStorage.getItem('vw.spice.audio') !== '0',
+  audio: false,
   guestResize: localStorage.getItem('vw.spice.resize') === '1',
   zoom: Number(localStorage.getItem('vw.spice.zoom')) || 100,
 };
@@ -103,7 +105,20 @@ function applyZoom() {
   const aw = screenEl.clientWidth, ah = screenEl.clientHeight;
   if (!aw || !ah) return;
   const fit = Math.min(aw / c.width, ah / c.height);
-  const z = settings.zoom / 100;
+  let z = settings.zoom / 100;
+  /* If the guest has followed the zoom-scaled resolution request
+     (guest resize on), the density is already baked into the bitmap:
+     fitting it to the area again would apply the zoom a second time
+     (the view shrinks by z^2 instead of z, while the guest doubles its
+     resolution). Bitmap ≈ the last request is the signal that it
+     followed (guests may round to a nearby mode). */
+  const rq = lastGuestRequest;
+  if (
+    rq &&
+    Math.abs(c.width - rq[0]) <= 0.05 * rq[0] &&
+    Math.abs(c.height - rq[1]) <= 0.05 * rq[1]
+  )
+    z = 1;
   c.style.width = `${Math.round(c.width * fit * z)}px`;
   c.style.height = `${Math.round(c.height * fit * z)}px`;
 }
@@ -136,8 +151,7 @@ function applyAudio() {
 }
 new MutationObserver(applyAudio).observe(screenEl, { childList: true });
 audioTgl.addEventListener('change', () => {
-  settings.audio = audioTgl.checked;
-  localStorage.setItem('vw.spice.audio', settings.audio ? '1' : '0');
+  settings.audio = audioTgl.checked; // per-session opt-in; not persisted
   applyAudio();
 });
 
@@ -149,6 +163,10 @@ audioTgl.addEventListener('change', () => {
 // (re)connect, when the toggle is turned on, on zoom changes, and
 // when the window settles (debounced). resize_window queues the
 // MonConfig until the agent is up, so no extra guarding is needed.
+// [w, h] of the last zoom-scaled MonConfig the page sent; used by
+// applyZoom to tell "the guest followed" (cancel the zoom factor) from
+// "the guest has a fixed resolution" (zoom is a plain magnifier).
+let lastGuestRequest = null;
 function guestResize() {
   const sp = window.__spice;
   if (!sp || !settings.guestResize) return;
@@ -159,6 +177,7 @@ function guestResize() {
   h = Math.floor(h / 8) * 8;
   if (w < 64 || h < 48) return;
   sp.resize_window(0, w, h, 32, 0, 0);
+  lastGuestRequest = [w, h];
   const st = document.getElementById('spice-status');
   if (st && !st.classList.contains('status-err'))
     // Whether the guest actually follows depends on its display server:
@@ -175,7 +194,9 @@ window.addEventListener('resize', scheduleGuestResize);
 resizeTgl.addEventListener('change', () => {
   settings.guestResize = resizeTgl.checked;
   localStorage.setItem('vw.spice.resize', settings.guestResize ? '1' : '0');
-  if (settings.guestResize) guestResize();
+  // Off: the bitmap is fixed again, so zoom is a plain magnifier.
+  if (!settings.guestResize) lastGuestRequest = null;
+  else guestResize();
 });
 
 document.getElementById('spice-form').addEventListener('submit', (e) => {

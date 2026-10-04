@@ -661,6 +661,15 @@ SpiceMainConn.prototype.handle_clipboard_send = function()
 {
     DEBUG > 1 && console.log("sending clipboard data to agent");
 
+    /* virtweb delta: guests (e.g. KWin on focus changes) request the
+       clipboard without any user action, and browsers — Firefox in
+       particular — only permit programmatic reads during a transient
+       user activation. Skip instead of logging a rejection for every
+       unsolicited request; with a real user gesture the read below
+       proceeds as before. */
+    if (navigator.userActivation && !navigator.userActivation.isActive)
+        return;
+
     // agent is requesting clipboard data, read it from browser clipboard and send it.
     if (navigator.clipboard && navigator.clipboard.readText)
     {
@@ -669,7 +678,7 @@ SpiceMainConn.prototype.handle_clipboard_send = function()
             const clipboard_msg = new Messages.SpiceMsgClipboardSend(type, text, this.agent_caps);
             this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clipboard_msg);
         }).catch(err => {
-            console.log("Failed to read clipboard:", err);
+            console.debug("Failed to read clipboard:", err);
         });
     }
 }
