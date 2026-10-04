@@ -218,7 +218,16 @@ GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice
   WebSocket-per-channel); when the main channel fails, the sibling
   channels are torn down with it (their tunnels close too). The display
   address comes from `virsh domdisplay` (SPICE ports are auto-assigned
-  at boot and the display is often loopback-bound).
+  at boot and the display is often loopback-bound). Channel count
+  matters: every channel is a long-lived HTTP stream, and on
+  plain HTTP/1.1 a browser allows only **six concurrent connections
+  per host**. The fork therefore opens only the channels it
+  implements (main, display, inputs, cursor, playback, port) and
+  skips the rest (usbredir, record) — a domain with two `spicevmc`
+  devices advertises eight channels, and the extras would both
+  deadlock on the browser side and confuse the spice-server. Behind
+  the mTLS reverse proxy the streams should ride HTTP/2, where the
+  per-host connection limit does not apply.
 
 **Auto-retry.** A console/VNC/SPICE page whose session fails or is lost
 reloads itself automatically — up to 5 times (the count survives the

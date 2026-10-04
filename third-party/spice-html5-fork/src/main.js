@@ -223,10 +223,20 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
                 this.ports.push(new SpicePortConn(conn));
             else
             {
-                if (! ("extra_channels" in this))
-                    this.extra_channels = [];
-                this.extra_channels[i] = new SpiceConn(conn);
-                this.log_err("Channel type " + this.extra_channels[i].channel_type() + " not implemented");
+                // Fork: do NOT open a connection for channel types this
+                // client cannot speak (usbredir, record, ...). Every
+                // channel consumes one of the transport's scarce
+                // connections — on plain HTTP/1.1 a browser allows only
+                // six concurrent connections per host, and the
+                // transport streams are long-lived, so connecting
+                // un-implementable channels starves the ones that do
+                // work (display, inputs, cursor). Upstream opens them
+                // anyway; here a log line is all they get.
+                if (! ("skipped_channels" in this))
+                    this.skipped_channels = [];
+                this.skipped_channels.push(conn.type);
+                this.log_info("Channel type " + conn.type +
+                    " not implemented; not opening a connection for it");
             }
 
         }
