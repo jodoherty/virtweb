@@ -89,11 +89,30 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
 
 
 
+/* virtweb delta: map the pointer from CSS pixels into canvas-bitmap
+   coordinates. The virtweb page scales the canvas with CSS
+   (fit-to-viewport), so e.offsetX/Y alone would send the guest
+   coordinates stretched (or shrunk) by the CSS scale. At scale 1:1
+   the mapping is the identity, so this is a no-op for unscaled
+   layouts. The mapped values ride on the event (e._vwx/e._vwy) and
+   are consumed by SpiceMsgcMousePosition/SpiceMsgcMouseMotion. */
+function map_pointer_to_canvas(e, canvas)
+{
+    if (!canvas) return;
+    var rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    e._vwx = Math.max(0, Math.min(canvas.width,
+        Math.round((e.clientX - rect.left) * canvas.width / rect.width)));
+    e._vwy = Math.max(0, Math.min(canvas.height,
+        Math.round((e.clientY - rect.top) * canvas.height / rect.height)));
+}
+
 function handle_mousemove(e)
 {
     /* Only build the message once we know it will be sent; mousemove can
        fire hundreds of times a second and the discarded-motion path was
        paying for two allocations and a serialize per event. */
+    map_pointer_to_canvas(e, this);
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
     {
         if (this.sc.inputs.waiting_for_ack < (2 * Constants.SPICE_INPUT_MOTION_ACK_BUNCH))
@@ -141,6 +160,7 @@ function handle_mousemove(e)
 
 function handle_mousedown(e)
 {
+    map_pointer_to_canvas(e, this);
     var press = new Messages.SpiceMsgcMousePress(this.sc, e)
     var msg = new Messages.SpiceMiniData();
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_PRESS, press);

@@ -1,9 +1,22 @@
 {{define "vnc"}}
-<p><a href="/servers/{{.Server.ID}}">←</a> VNC — <strong>{{.VM.Name}}</strong>
-  <span class="muted">({{.VM.State}})</span></p>
-<p id="vnc-status" class="muted">Connecting…</p>
-<button id="vnc-reconnect" hidden>Reconnect</button>
-<div id="vnc" class="vnc-frame"></div>
-<script type="application/json" id="vnc-cfg">{{.CfgJSON}}</script>
-<script type="module" src="/static/vnc.js"></script>
+<header class="viewer-bar">
+  <a class="viewer-back" href="/servers/{{.Server.ID}}">←</a>
+  <h1>VNC — <strong>{{.VM.Name}}</strong> <span class="muted">({{.VM.State}})</span></h1>
+  <span class="viewer-tools">
+    <span id="vnc-status" class="viewer-status muted">{{if not .Running}}This VM is {{.VM.State}} — start it first.{{else}}Connecting…{{end}}</span>
+    <button id="vnc-reconnect" hidden>Reconnect</button>
+    <button id="vnc-fullscreen" type="button">Fullscreen</button>
+  </span>
+</header>
+<main id="vnc-main" class="viewer-main">
+  <!-- The display fills this fixed area; it never moves. -->
+  <div id="vnc" class="viewer-display vnc-frame"></div>
+  {{if not .Running}}
+  <div class="viewer-connect"><div class="viewer-card muted">
+    This VM is {{.VM.State}} — <a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}">start it</a> to use its displays.
+  </div></div>
+  {{end}}
+  <script type="application/json" id="vnc-cfg">{{.CfgJSON}}</script>
+  <script type="module" src="/static/vnc.js"></script>
+</main>
 {{end}}

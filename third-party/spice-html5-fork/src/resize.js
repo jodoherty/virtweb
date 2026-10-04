@@ -32,23 +32,15 @@
 **--------------------------------------------------------------------------*/
 function resize_helper(sc)
 {
-    var w = document.getElementById(sc.screen_id).clientWidth;
-    var m = document.getElementById(sc.message_id);
-
-    /* Resize vertically; basically we leave a 20 pixel margin
-         at the bottom, and use the position of the message window
-         to figure out how to resize */
-
-    var h = window.innerHeight - 20;
-
-    /* Screen height based on message console visibility.  A hidden console
-       occupies no space, so only a visible one reduces the screen; its
-       offsetHeight already includes the client area, so subtract it once. */
-    if (m != null &&
-        window.getComputedStyle(m).getPropertyValue("display") != 'none')
-    {
-        h = h - m.offsetHeight;
-    }
+    /* virtweb delta: the screen element fills a fixed viewport area, so
+       use its size directly. Upstream subtracted the height of an
+       inline message console element from window.innerHeight; in
+       virtweb the log panel is a position:absolute overlay that never
+       occupies layout space, so that subtraction would shrink the
+       guest by the panel's height whenever the log is open. */
+    var m = document.getElementById(sc.screen_id);
+    var w = m ? m.clientWidth : window.innerWidth;
+    var h = m ? m.clientHeight : window.innerHeight - 20;
 
 
     /* Xorg requires height be a multiple of 8; round down */

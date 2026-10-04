@@ -202,6 +202,17 @@ GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice
 
 ### Console / VNC / SPICE
 
+All three pages share one layout: the remote display **never moves**.
+The page is a single viewport — a header bar (title, live status,
+Reconnect, **Fullscreen**, and on the SPICE page a **Log** toggle)
+and one display area that fills the rest. The display is fitted to
+the available space with CSS (aspect-preserving), Fullscreen pins it
+to the screen (Esc leaves), the SPICE log is an overlay panel that
+does not participate in layout, and the SPICE connect form is a
+centered overlay card that disappears once the session is live.
+Status, errors, logs, and the form can therefore never reposition
+the remote display.
+
 - **Console** — the serial console (`ssh -tt` → `virsh console`). The
   page reports a distinct status for every terminal state: *Connected*,
   *Session ended*, *Connection lost* (with the server's reason when the

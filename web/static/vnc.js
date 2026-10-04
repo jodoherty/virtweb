@@ -140,6 +140,13 @@ window.__vncChannel = ch; // e2e hook
 
 // RFB's constructor kicks the connection off (state 'connecting' →
 // _connect → Websock.attach), so construct = connect.
+// Fullscreen: pin the display area to the screen (Esc leaves it).
+document.getElementById('vnc-fullscreen')?.addEventListener('click', () => {
+  const main = document.getElementById('vnc-main');
+  if (document.fullscreenElement) document.exitFullscreen();
+  else main.requestFullscreen?.();
+});
+
 const rfb = new RFB(document.getElementById('vnc'), new ChannelSocket(ch), {
   shared: false,
   credentials: { password: cfg.password || '' },

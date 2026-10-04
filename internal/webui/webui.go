@@ -170,6 +170,10 @@ type page struct {
 	Page    string
 	Err     string
 	OK      string
+	// Viewer marks the display pages (console/VNC/SPICE): they carry
+	// their own viewport-pinned layout (header bar + full display area)
+	// and the shared page header/main wrapper is skipped.
+	Viewer bool
 	Servers []virt.Server
 	Server  *virt.Server
 	VMs     []virt.VM
@@ -413,6 +417,7 @@ func (u *UI) handleConsolePage(w http.ResponseWriter, r *http.Request) {
 	})
 	u.render(w, page{
 		Page:    "console",
+		Viewer:  true,
 		Title:   "Console " + vm.Name,
 		Server:  &srv,
 		VM:      &vm,
@@ -447,6 +452,7 @@ func (u *UI) handleVNCPage(w http.ResponseWriter, r *http.Request) {
 	j, _ := json.Marshal(cfg)
 	u.render(w, page{
 		Page:    "vnc",
+		Viewer:  true,
 		Title:   "VNC " + vm.Name,
 		Server:  &srv,
 		VM:      &vm,
@@ -478,6 +484,7 @@ func (u *UI) handleSpicePage(w http.ResponseWriter, r *http.Request) {
 	})
 	u.render(w, page{
 		Page:    "spice",
+		Viewer:  true,
 		Title:   "SPICE " + vm.Name,
 		Server:  &srv,
 		VM:      &vm,

@@ -19,6 +19,19 @@ function spiceStatus(msg, { failed = false, reconnect = false } = {}) {
   if (reconnectBtn) reconnectBtn.hidden = !reconnect;
 }
 
+// The connect form is an overlay card that disappears once the
+// session is live; the display area never moves either way.
+const formEl = document.getElementById('spice-form');
+const logPanel = document.getElementById('spice-log');
+document.getElementById('spice-logtoggle')?.addEventListener('click', () => {
+  logPanel.hidden = !logPanel.hidden;
+});
+document.getElementById('spice-fullscreen')?.addEventListener('click', () => {
+  const main = document.getElementById('spice-main');
+  if (document.fullscreenElement) document.exitFullscreen();
+  else main.requestFullscreen?.();
+});
+
 document.getElementById('spice-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const q = new URLSearchParams(new FormData(e.target));
@@ -42,6 +55,7 @@ document.getElementById('spice-form').addEventListener('submit', (e) => {
     onsuccess: () => {
       clearRetries();
       spiceStatus('Connected.', { reconnect: false });
+      if (formEl) formEl.hidden = true;
     },
     onerror: (err) => {
       if (reported) return;

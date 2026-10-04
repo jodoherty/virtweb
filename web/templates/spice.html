@@ -1,17 +1,35 @@
 {{define "spice"}}
-<p><a href="/servers/{{.Server.ID}}">←</a> SPICE — <strong>{{.VM.Name}}</strong>
-  <span class="muted">({{.VM.State}})</span></p>
-<form id="spice-form">
-  <label>Password <input name="password" type="password" size="20"></label>
-  <button type="submit">Connect</button>
-</form>
-<p id="spice-status" class="muted">
-  {{if not .Running}}This VM is {{.VM.State}} — start it first.{{end}}
-  {{if .VM.SpiceAddr}}SPICE display: <code>{{.VM.SpiceAddr}}</code> (resolved on the server from <code>virsh domdisplay</code>; <code>127.0.0.1</code> means the server host itself, where SPICE is often loopback-bound).{{else}}No SPICE display reported — start the VM first.{{end}}</p>
-<button id="spice-reconnect" hidden>Reconnect</button>
-<div id="spice-messages"></div>
-<div id="spice" class="spice-frame"></div>
-<link rel="stylesheet" href="/spice/spice.css">
-<script type="application/json" id="spice-cfg">{{.CfgJSON}}</script>
-<script type="module" src="/static/spice.js"></script>
+<header class="viewer-bar">
+  <a class="viewer-back" href="/servers/{{.Server.ID}}">←</a>
+  <h1>SPICE — <strong>{{.VM.Name}}</strong> <span class="muted">({{.VM.State}})</span></h1>
+  <span class="viewer-tools">
+    <span id="spice-status" class="viewer-status muted">{{if not .Running}}This VM is {{.VM.State}} — start it first.{{else}}{{if .VM.SpiceAddr}}SPICE display: <code>{{.VM.SpiceAddr}}</code> (resolved on the server from <code>virsh domdisplay</code>; <code>127.0.0.1</code> means the server host itself, where SPICE is often loopback-bound).{{else}}No SPICE display reported — start the VM first.{{end}}{{end}}</span>
+    <button id="spice-reconnect" hidden>Reconnect</button>
+    <button id="spice-logtoggle" type="button">Log</button>
+    <button id="spice-fullscreen" type="button">Fullscreen</button>
+  </span>
+</header>
+<main id="spice-main" class="viewer-main">
+  <!-- The display fills this fixed area; it never moves. -->
+  <div id="spice" class="viewer-display spice-frame"></div>
+  <!-- Log: an overlay panel, off by default; never participates in
+       layout, so toggling it cannot reposition the display. -->
+  <div id="spice-log" class="viewer-log" hidden>
+    <div id="spice-messages"></div>
+  </div>
+  {{if not .Running}}
+  <div class="viewer-connect"><div class="viewer-card muted">
+    This VM is {{.VM.State}} — <a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}">start it</a> to use its displays.
+  </div></div>
+  {{else}}
+  <form id="spice-form" class="viewer-connect">
+    <div class="viewer-card">
+      <label>Password <input name="password" type="password" size="20"></label>
+      <button type="submit">Connect</button>
+    </div>
+  </form>
+  {{end}}
+  <script type="application/json" id="spice-cfg">{{.CfgJSON}}</script>
+  <script type="module" src="/static/spice.js"></script>
+</main>
 {{end}}

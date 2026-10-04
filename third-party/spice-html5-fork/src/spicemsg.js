@@ -1083,11 +1083,18 @@ function SpiceMsgcMousePosition(sc, e)
     this.buttons_state = sc.buttons_state;
     if (e)
     {
-        this.x = e.offsetX;
-        this.y = e.offsetY;
+        // virtweb delta: the guest receives canvas-bitmap coordinates,
+        // while e.offsetX/Y are CSS pixels. The virtweb page scales the
+        // canvas with CSS (fit-to-viewport), so the input handler maps
+        // the pointer through the element's rect into bitmap space
+        // before the event reaches this builder (e._vwx/e._vwy). The
+        // offsets below are only the fallback when that mapping was
+        // not done (scale 1:1, where the two are identical).
+        this.x = (e._vwx !== undefined) ? e._vwx : e.offsetX;
+        this.y = (e._vwy !== undefined) ? e._vwy : e.offsetY;
 
-        sc.mousex = e.offsetX;
-        sc.mousey = e.offsetY;
+        sc.mousex = this.x;
+        sc.mousey = this.y;
     }
     else
     {
@@ -1120,16 +1127,21 @@ function SpiceMsgcMouseMotion(sc, e)
     this.buttons_state = sc.buttons_state;
     if (e)
     {
-        this.x = e.offsetX;
-        this.y = e.offsetY;
+        // virtweb delta: absolute position in canvas-bitmap space
+        // (see SpiceMsgcMousePosition), from which the relative
+        // motion is derived.
+        var ax = (e._vwx !== undefined) ? e._vwx : e.offsetX;
+        var ay = (e._vwy !== undefined) ? e._vwy : e.offsetY;
+        this.x = ax;
+        this.y = ay;
 
         if (sc.mousex !== undefined)
         {
             this.x -= sc.mousex;
             this.y -= sc.mousey;
         }
-        sc.mousex = e.offsetX;
-        sc.mousey = e.offsetY;
+        sc.mousex = ax;
+        sc.mousey = ay;
     }
     else
     {

@@ -22,12 +22,16 @@ const testKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH
 
 var testWeb = fstest.MapFS{
 	"templates/layout.html": &fstest.MapFile{Data: []byte(
-		`{{define "layout"}}<html><body>{{if .Err}}<div class="banner error">{{.Err}}</div>{{end}}` +
+		`{{define "layout"}}<html><body{{if .Viewer}} class="viewer"{{end}}>` +
+			`{{if .Viewer}}{{if eq .Page "console"}}{{template "console" .}}` +
+			`{{else if eq .Page "vnc"}}{{template "vnc" .}}{{else}}{{template "spice" .}}{{end}}` +
+			`{{else}}<header><a class="brand">virtweb</a></header><main>` +
+			`{{if .Err}}<div class="banner error">{{.Err}}</div>{{end}}` +
 			`{{if .OK}}<div class="banner ok">{{.OK}}</div>{{end}}` +
 			`{{if eq .Page "servers"}}{{template "servers" .}}{{else if eq .Page "server"}}{{template "server" .}}` +
 			`{{else if eq .Page "vm"}}{{template "vm" .}}{{else if eq .Page "console"}}{{template "console" .}}` +
 			`{{else}}{{template "vnc" .}}{{end}}` +
-			`</body></html>{{end}}`)},
+			`</main>{{end}}</body></html>{{end}}`)},
 	"templates/vm.html": &fstest.MapFile{Data: []byte(
 		`{{define "vm"}}<h2>{{.VM.Name}}</h2>` +
 			`<section class="vm-displays">` +
@@ -58,10 +62,20 @@ var testWeb = fstest.MapFS{
 			`{{if .Running}}<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">console</a>{{end}}</div>{{end}}` +
 			`{{if not .VMs}}<p class="muted">no vms</p>{{end}}{{end}}`)},
 	"templates/console.html": &fstest.MapFile{Data: []byte(
-		`{{define "console"}}{{if not .Running}}<div class="banner warn">shut off</div>{{else}}` +
-			`<div id="term"></div><script id="console-cfg" type="application/json">{{.CfgJSON}}</script>{{end}}{{end}}`)},
+		`{{define "console"}}<header class="viewer-bar">` +
+			`<span id="console-status" class="viewer-status">{{if not .Running}}shut off{{else}}Connecting…{{end}}</span>` +
+			`</header><main class="viewer-main">` +
+			`{{if not .Running}}<div class="viewer-connect">shut off</div>{{else}}` +
+			`<div id="term"></div>` +
+			`<script id="console-cfg" type="application/json">{{.CfgJSON}}</script>{{end}}</main>{{end}}`)},
 	"templates/vnc.html": &fstest.MapFile{Data: []byte(
-		`{{define "vnc"}}<div id="vnc">{{.VM.Name}}</div>{{end}}`)},
+		`{{define "vnc"}}<header class="viewer-bar"><span id="vnc-status" class="viewer-status">vnc</span></header>` +
+			`<main class="viewer-main"><div id="vnc">{{.VM.Name}}</div></main>{{end}}`)},
+	"templates/spice.html": &fstest.MapFile{Data: []byte(
+		`{{define "spice"}}<header class="viewer-bar"><span id="spice-status" class="viewer-status">spice</span></header>` +
+			`<main class="viewer-main"><div id="spice"></div>` +
+			`<div id="spice-log" hidden><div id="spice-messages"></div></div>` +
+			`<form id="spice-form" class="viewer-connect"></form></main>{{end}}`)},
 	"static/style.css": &fstest.MapFile{Data: []byte("body{}")},
 }
 
@@ -483,6 +497,34 @@ func TestVNCPage(t *testing.T) {
 	w := doGet(t, ui.Routes(), "/servers/"+s.ID+"/vms/win10/vnc")
 	if w.Code != 200 || !strings.Contains(body(w), "win10") {
 		t.Fatalf("got %d: %s", w.Code, body(w))
+	}
+}
+
+// The remote display pages are viewport-pinned: a body.viewer with a
+// header bar (status + tools) and one display area, and no scrollable
+// page around them — so status text, log output, and the connect form
+// can never reposition the display.
+func TestViewerLayout(t *testing.T) {
+	ui, st := newTestUI(t)
+	s := addServer(t, st)
+	for _, url := range []string{
+		"/servers/" + s.ID + "/vms/debian-dev/console",
+		"/servers/" + s.ID + "/vms/win10/vnc",
+		"/servers/" + s.ID + "/vms/debian-dev/spice",
+	} {
+		b := body(doGet(t, ui.Routes(), url))
+		for _, want := range []string{
+			`class="viewer"`, `viewer-bar`, `viewer-main`, `viewer-status`,
+		} {
+			if !strings.Contains(b, want) {
+				t.Fatalf("%s: missing %q", url, want)
+			}
+		}
+	}
+	// Non-viewer pages keep the ordinary scrollable layout.
+	b := body(doGet(t, ui.Routes(), "/servers"))
+	if strings.Contains(b, `class="viewer"`) || strings.Contains(b, "viewer-bar") {
+		t.Fatalf("server list page picked up viewer layout")
 	}
 }
 

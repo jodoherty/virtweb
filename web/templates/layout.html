@@ -6,8 +6,13 @@
   <title>{{.Title}} — virtweb</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body{{if .Viewer}} class="viewer"{{end}}>
 <script type="module" src="/static/ui.js"></script>
+{{if .Viewer}}
+{{if eq .Page "console"}}{{template "console" .}}
+{{else if eq .Page "vnc"}}{{template "vnc" .}}
+{{else}}{{template "spice" .}}{{end}}
+{{else}}
 <header><a class="brand" href="/">virtweb</a></header>
 <main>
 {{if .Err}}<div class="banner error">{{.Err}}</div>{{end}}
@@ -15,9 +20,8 @@
 {{if eq .Page "servers"}}{{template "servers" .}}
 {{else if eq .Page "server"}}{{template "server" .}}
 {{else if eq .Page "vm"}}{{template "vm" .}}
-{{else if eq .Page "console"}}{{template "console" .}}
-{{else if eq .Page "vnc"}}{{template "vnc" .}}
 {{else}}{{template "spice" .}}{{end}}
 </main>
+{{end}}
 </body>
 </html>{{end}}
