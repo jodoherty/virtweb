@@ -150,6 +150,9 @@ document.getElementById('vnc-fullscreen')?.addEventListener('click', () => {
 const rfb = new RFB(document.getElementById('vnc'), new ChannelSocket(ch), {
   shared: false,
   credentials: { password: cfg.password || '' },
+  // Fit the display to the (fixed) viewer area, aspect preserved;
+  // noVNC's own ResizeObserver drives it.
+  scaleViewport: true,
 });
 window.__rfb = rfb; // e2e hook
 

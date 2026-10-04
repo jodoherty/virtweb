@@ -152,6 +152,11 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
         this.our_mm_time = Date.now();
         this.mm_time = this.main_init.multi_media_time;
 
+        /* virtweb delta: the agent's presence decides the mouse mode
+           we request (see handle_mouse_mode), so record it before the
+           first mode decision. */
+        this.agent_connected = this.main_init.agent_connected;
+
         this.handle_mouse_mode(this.main_init.current_mouse_mode,
                                this.main_init.supported_mouse_modes);
 
@@ -684,9 +689,28 @@ SpiceMainConn.prototype.connect_agent = function()
 SpiceMainConn.prototype.handle_mouse_mode = function(current, supported)
 {
     this.mouse_mode = current;
-    if (current != Constants.SPICE_MOUSE_MODE_CLIENT && (supported & Constants.SPICE_MOUSE_MODE_CLIENT))
+    /* virtweb delta: pick the mouse mode from the guest's SPICE
+       agent state instead of upstream's "always CLIENT":
+       - agent connected  -> CLIENT (absolute): the agent moves the
+         guest cursor from reported positions, which also gives
+         seamless cursor behaviour;
+       - no agent         -> SERVER (relative): in client mode the
+         server has to apply the positions through the emulated
+         input device, which on a guest without the agent often
+         ends up on a device that ignores them (e.g. the USB
+         tablet that QEMU's cursor=auto adds next to the PS/2
+         mouse), so the cursor never moves and clicks land at
+         stale positions. Relative motion goes to the ordinary
+         mouse device and works without any guest-side support.
+       The server confirms (or refuses) the request with a
+       SPICE_MSG_MAIN_MOUSE_MODE push, which re-enters this
+       function. */
+    var want = (this.agent_connected ?
+        Constants.SPICE_MOUSE_MODE_CLIENT :
+        Constants.SPICE_MOUSE_MODE_SERVER);
+    if (current != want && (supported & want))
     {
-        var mode_request = new Messages.SpiceMsgcMainMouseModeRequest(Constants.SPICE_MOUSE_MODE_CLIENT);
+        var mode_request = new Messages.SpiceMsgcMainMouseModeRequest(want);
         var mr = new Messages.SpiceMiniData();
         mr.build_msg(Constants.SPICE_MSGC_MAIN_MOUSE_MODE_REQUEST, mode_request);
         this.send_msg(mr);

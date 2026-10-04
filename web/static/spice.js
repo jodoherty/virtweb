@@ -46,7 +46,9 @@ document.getElementById('spice-form').addEventListener('submit', (e) => {
   // failure through several events (error, then an "unexpected
   // close"), so report only the first.
   let reported = false;
-  new SpiceMainConn({
+  // Test/debug hook (parity with the console and VNC pages): the live
+  // connection, readable from DevTools and the e2e suite.
+  window.__spice = new SpiceMainConn({
     uri: cfg.tunnelBase + '/stream' + p,
     inputUri: cfg.tunnelBase + '/input' + p,
     password: q.get('password') || '',

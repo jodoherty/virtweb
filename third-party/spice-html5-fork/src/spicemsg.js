@@ -567,11 +567,21 @@ SpiceMsgcMainMouseModeRequest.prototype =
     {
         at = at || 0;
         var dv = new DataView(a);
-        dv.setUint16(at, this.mode, true); at += 2;
+        /* virtweb delta: the protocol defines the requested mode as
+           UINT32 (spice_protocol.txt, SPICE_MSGC_MAIN_MOUSE_MODE
+           _REQUEST). Upstream writes it as a UINT16, so the server's
+           u32 read picks up 256/512 (the mode byte shifted into the
+           upper half) and the request falls into its
+           "unsupported mouse mode" default — silently dropped. That
+           was invisible upstream because it requests exactly the mode
+           the server already defaults to; virtweb requests the other
+           one (server mode — see main.js), so the width must be
+           right for the switch to happen at all. */
+        dv.setUint32(at, this.mode, true); at += 4;
     },
     buffer_size: function()
     {
-        return 2;
+        return 4;
     }
 }
 
@@ -1139,6 +1149,15 @@ function SpiceMsgcMouseMotion(sc, e)
         {
             this.x -= sc.mousex;
             this.y -= sc.mousey;
+        }
+        else
+        {
+            /* virtweb delta: the first event has no previous position
+               to diff against; upstream sends the absolute position as
+               the relative delta (the guest cursor jumps by the whole
+               pointer offset). Record the position and send a zero
+               delta instead. */
+            this.x = this.y = 0;
         }
         sc.mousex = ax;
         sc.mousey = ay;

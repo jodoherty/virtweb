@@ -90,21 +90,27 @@ SpiceInputsConn.prototype.process_channel_message = function(msg)
 
 
 /* virtweb delta: map the pointer from CSS pixels into canvas-bitmap
-   coordinates. The virtweb page scales the canvas with CSS
-   (fit-to-viewport), so e.offsetX/Y alone would send the guest
-   coordinates stretched (or shrunk) by the CSS scale. At scale 1:1
-   the mapping is the identity, so this is a no-op for unscaled
-   layouts. The mapped values ride on the event (e._vwx/e._vwy) and
-   are consumed by SpiceMsgcMousePosition/SpiceMsgcMouseMotion. */
+   coordinates. The virtweb page fits the canvas to its container
+   with `object-fit: contain`, so the bitmap may be letterboxed
+   inside the element's box (scaled to fill, aspect preserved):
+   recover the displayed bitmap rectangle and map into it. With no
+   CSS scaling at all (scale 1, no letterbox) the math degenerates
+   to the identity, so unscaled layouts are unaffected. The mapped
+   values ride on the event (e._vwx/e._vwy) and are consumed by
+   SpiceMsgcMousePosition/SpiceMsgcMouseMotion. */
 function map_pointer_to_canvas(e, canvas)
 {
     if (!canvas) return;
     var rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    e._vwx = Math.max(0, Math.min(canvas.width,
-        Math.round((e.clientX - rect.left) * canvas.width / rect.width)));
-    e._vwy = Math.max(0, Math.min(canvas.height,
-        Math.round((e.clientY - rect.top) * canvas.height / rect.height)));
+    var bw = canvas.width, bh = canvas.height;
+    if (!rect.width || !rect.height || !bw || !bh) return;
+    var scale = Math.min(rect.width / bw, rect.height / bh);
+    var offX = (rect.width - bw * scale) / 2;
+    var offY = (rect.height - bh * scale) / 2;
+    e._vwx = Math.max(0, Math.min(bw,
+        Math.round((e.clientX - rect.left - offX) / scale)));
+    e._vwy = Math.max(0, Math.min(bh,
+        Math.round((e.clientY - rect.top - offY) / scale)));
 }
 
 function handle_mousemove(e)
