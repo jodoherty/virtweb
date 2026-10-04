@@ -34,6 +34,15 @@ if (disconnectBtn)
       sp.cleanup();
       window.__spice = undefined;
     }
+    // The display area is the page's own element (#spice); the fork's
+    // canvases (and the simulated-cursor overlay, when in use) are its
+    // children. Drop the last frame and the guest cursor so the
+    // "Disconnected." state cannot read as a live session.
+    const screen = document.getElementById('spice');
+    if (screen) {
+      screen.innerHTML = '';
+      screen.style.cursor = '';
+    }
     clearRetries();
     spiceStatus('Disconnected.', { reconnect: true });
     // Reconnect reloads the page; put the connect form back so the
