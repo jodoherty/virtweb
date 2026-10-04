@@ -42,6 +42,39 @@ function SpiceCursorConn()
 var MAX_CSS_CURSOR = 128;
 
 SpiceCursorConn.prototype = Object.create(SpiceConn.prototype);
+
+
+/* virtweb delta: live cursor telemetry. A "the cursor doesn't show"
+   report is otherwise impossible to answer from the other end of the
+   wire: these records (window.__spice.cursorDebug) and the lines in
+   the viewer's Log panel say exactly which shapes the guest sent
+   (protocol type number), whether each was applied, and how (CSS
+   cursor, simulated-cursor fallback, or rejected). */
+var CURSOR_TYPE_NAMES = { 0: "alpha", 1: "mono", 2: "color4", 3: "color8",
+                          4: "color16", 5: "color24", 6: "color32" };
+
+SpiceCursorConn.prototype.cursor_note = function(event, cursor)
+{
+    var rec = { event: event, at: Date.now() };
+    if (cursor && cursor.header)
+    {
+        rec.w = cursor.header.width;
+        rec.h = cursor.header.height;
+        rec.type = cursor.header.type;
+        rec.typeName = CURSOR_TYPE_NAMES[cursor.header.type] ||
+                       ("unknown(" + cursor.header.type + ")");
+        rec.hot = [cursor.header.hot_spot_x, cursor.header.hot_spot_y];
+    }
+    if (this.parent)
+    {
+        var dbg = this.parent.cursorDebug =
+            this.parent.cursorDebug || { count: 0 };
+        dbg.count++;
+        dbg.last = rec;
+    }
+    return rec;
+};
+
 SpiceCursorConn.prototype.process_channel_message = function(msg)
 {
     if (msg.type == Constants.SPICE_MSG_CURSOR_INIT)
@@ -70,10 +103,19 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
            (hourglass, resize, ...) was: the client showed real
            cursors only for the non-default ones. Apply it like a
            SET; honour the visible flag. */
+        var rec = this.cursor_note("INIT", cursor_init.cursor);
+        rec.visible = !!cursor_init.visible;
+        if (rec.w)
+            this.log_info("cursor: INIT shape " + rec.w + "x" + rec.h + " " +
+                          rec.typeName +
+                          (rec.visible ? " (visible)" : " (hidden)"));
         if (cursor_init.cursor)
         {
             if (cursor_init.visible)
-                this.set_cursor(cursor_init.cursor);
+            {
+                if (! this.set_cursor(cursor_init.cursor))
+                    this.warn_once_per_cursor_type(cursor_init.cursor.header.type);
+            }
             else
                 this.hide_cursor();
         }
@@ -96,6 +138,19 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
         /* An unconvertible shape is not an unhandled message: returning
            false here made the base class log a second, misleading
            "Unknown message type 103" for every one of these. */
+        var rec = this.cursor_note("SET", cursor_set.cursor);
+        if (cursor_set.cursor.flags == 0 &&
+            (! this.lastSetLogged ||
+             this.lastSetLogged.w != rec.w || this.lastSetLogged.h != rec.h ||
+             this.lastSetLogged.type != rec.type))
+        {
+            /* Windows sends a SET on nearly every hover; log a shape
+               only when it actually differs from the last one logged. */
+            this.lastSetLogged = rec;
+            this.log_info("cursor: SET shape " + rec.w + "x" + rec.h + " " +
+                          rec.typeName);
+        }
+
         if (! this.set_cursor(cursor_set.cursor))
             this.warn_once_per_cursor_type(cursor_set.cursor.header.type);
 
@@ -122,6 +177,8 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_CURSOR_HIDE)
     {
         DEBUG > 1 && console.log("SpiceMsgCursorHide");
+        this.cursor_note("HIDE", null);
+        this.log_info("cursor: HIDE");
         this.hide_cursor();
         return true;
     }
@@ -135,6 +192,8 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_CURSOR_RESET)
     {
         DEBUG > 1 && console.log("SpiceMsgCursorReset");
+        this.cursor_note("RESET", null);
+        this.log_info("cursor: RESET (shape cache cleared)");
         document.getElementById(this.parent.screen_id).style.cursor = "auto";
         return true;
     }
@@ -171,6 +230,16 @@ SpiceCursorConn.prototype.warn_once_per_cursor_type = function(type)
 /* SPICE cursor shapes to the RGBA the PNG writer expects.
    Returns null for a type we cannot convert.
    Layouts follow spice-gtk's set_cursor() (src/channel-cursor.c). */
+/* virtweb delta: record HOW the last shape was applied on the shared
+   cursorDebug record, so the page can distinguish "applied as CSS
+   cursor", "fell back to the simulated cursor image", and "the
+   browser rejected the image". */
+SpiceCursorConn.prototype.cursor_applied = function(how)
+{
+    if (this.parent && this.parent.cursorDebug && this.parent.cursorDebug.last)
+        this.parent.cursorDebug.last.applied = how;
+};
+
 function cursor_to_rgba(header, data)
 {
     var width = header.width;
@@ -272,7 +341,11 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
 {
     var rgba = cursor_to_rgba(cursor.header, cursor.data);
     if (! rgba)
+    {
+        this.cursor_applied("not converted (unsupported shape type " +
+                            cursor.header.type + ")");
         return false;
+    }
 
     var pngstr = create_rgba_png(cursor.header.width, cursor.header.height, rgba);
     var curstr = 'url(data:image/png,' + pngstr + ') ' +
@@ -287,7 +360,12 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
        shape that size is drawn under the pointer instead. */
     var too_large = cursor.header.width > MAX_CSS_CURSOR || cursor.header.height > MAX_CSS_CURSOR;
     if (too_large || window.getComputedStyle(screen, null).cursor == 'auto')
+    {
         SpiceSimulateCursor.simulate_cursor(this, cursor, screen, pngstr, too_large);
+        this.cursor_applied(too_large ?
+            "simulated (shape exceeds " + MAX_CSS_CURSOR + "px)" :
+            "simulated (browser rejected the CSS cursor image)");
+    }
     else
     {
         /* This cursor took effect natively, so drop the simulated one
@@ -295,6 +373,7 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
            handler would otherwise keep painting it alongside the real
            cursor forever. */
         this.remove_simulated_cursor();
+        this.cursor_applied("css");
     }
     return true;
 }
