@@ -11,7 +11,8 @@
   {{if .VM.VNCPort}}<tr><th>VNC</th><td>{{.Server.Host}}:{{.VM.VNCPort}}</td></tr>{{end}}
   {{if .VM.SpiceAddr}}<tr><th>SPICE</th><td>{{.VM.SpiceAddr}}</td></tr>{{end}}
 </table>
-<p class="actions">
+<section class="vm-actions">
+  <h3>State control</h3>
   {{if .VM.Running}}
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/shutdown"
         data-confirm="Shut down {{.VM.Name}}? This interrupts the VM."><button>Shutdown</button></form>
@@ -22,17 +23,22 @@
   {{else}}
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/start"><button>Start</button></form>
   {{end}}
-  {{if .VM.Running}}
-  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/console">Console</a>
-  {{if .VM.VNCPort}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>{{end}}
-  {{if .VM.SpiceAddr}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/spice">SPICE</a>{{end}}
-  {{end}}
-</p>
+</section>
 <h3>Domain XML <button type="button" id="copy-xml" class="muted">Copy</button></h3>
 {{if .XML}}
 <pre class="vm-xml" id="vm-xml">{{.XML}}</pre>
 {{else}}
 <p class="muted">XML unavailable (see banner above).</p>
 {{end}}
+<section class="vm-displays">
+  <h3>Display</h3>
+  {{if .VM.Running}}
+  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/console">Console</a>
+  {{if .VM.VNCPort}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>{{end}}
+  {{if .VM.SpiceAddr}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/spice">SPICE</a>{{end}}
+  {{else}}
+  <p class="muted">The VM is shut off. Start it to use its displays.</p>
+  {{end}}
+</section>
 <script type="application/json" id="vm-cfg">{{.CfgJSON}}</script>
 {{end}}

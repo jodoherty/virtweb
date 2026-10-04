@@ -165,8 +165,14 @@ links to open a VM's console / VNC / SPICE page — no actions in the
 table. All actions live on the VM's detail page, where only the
 transitions valid from the current state are offered: a shut-off VM
 shows **Start** (unconfirmed); a running VM shows **Shutdown /
-Destroy / Reboot** (each guarded by a confirmation dialog). The
-server is edited in place from
+Destroy / Reboot** (each guarded by a confirmation dialog). On that
+page the state controls sit in their own panel near the top and the
+display links (Console/VNC/SPICE) in a separate section at the very
+bottom, deliberately far apart: the display links are clicked often
+and are safe, while the state actions are rare and one is
+destructive, so distance (plus the confirms) keeps a habitual
+"open the console" click away from "Destroy". The server is edited
+in place from
 its page as well (host/port/user, name, SSH credentials). Defining
 or undefining domains is not offered in the UI (virtweb manages
 existing VMs); the REST API below still exposes it for automation.

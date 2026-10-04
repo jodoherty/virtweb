@@ -189,3 +189,21 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   font-size: 0.8rem;
   margin: 0.5rem 0;
 }
+
+/* VM detail page: state control and display links are deliberately
+   far apart — frequent, safe display actions at the bottom; rare,
+   potentially destructive state actions in their own boxed panel at
+   the top. Distance is a mistake-prevention feature, not decoration. */
+.vm-actions {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  margin: 1rem 0;
+}
+.vm-actions h3 { margin-top: 0; color: var(--muted); }
+.vm-actions form { display: inline-block; }
+.vm-actions button { margin-right: 0.4rem; }
+
+.vm-displays { margin-top: 2rem; }
+.vm-displays h3 { color: var(--muted); }

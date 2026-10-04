@@ -30,15 +30,19 @@ var testWeb = fstest.MapFS{
 			`</body></html>{{end}}`)},
 	"templates/vm.html": &fstest.MapFile{Data: []byte(
 		`{{define "vm"}}<h2>{{.VM.Name}}</h2>` +
+			`<section class="vm-actions">` +
 			`{{if .VM.Running}}` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/shutdown" data-confirm="Shut down?"></form>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/destroy" data-confirm="Destroy now?"></form>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/reboot" data-confirm="Reboot?"></form>` +
 			`{{else}}<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/start"></form>{{end}}` +
+			`</section>` +
+			`<pre id="vm-xml">{{.XML}}</pre>` +
+			`<section class="vm-displays">` +
 			`{{if .VM.Running}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
 			`{{if .VM.VNCPort}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/vnc">vnc</a>{{end}}` +
 			`{{if .VM.SpiceAddr}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/spice">spice</a>{{end}}{{end}}` +
-			`<pre id="vm-xml">{{.XML}}</pre>` +
+			`</section>` +
 			`<script id="vm-cfg" type="application/json">{{.CfgJSON}}</script>{{end}}`)},
 	"templates/servers.html": &fstest.MapFile{Data: []byte(
 		`{{define "servers"}}<ul class="server-list">{{range .Servers}}<li>{{.Name}} ` +
@@ -383,6 +387,17 @@ func TestInterruptActionsConfirmed(t *testing.T) {
 		if tag := formTag(b, "debian-dev", action); tag != "" {
 			t.Fatalf("shut-off detail page offers %s: %q", action, tag)
 		}
+	}
+
+	// the state-control block is physically separated from the
+	// display links: it appears on the detail page before the XML,
+	// and the display section after it.
+	if ai, di := strings.Index(b, "vm-actions"), strings.Index(b, "vm-displays");
+		ai < 0 || di < 0 || ai > di {
+		t.Fatalf("detail page: vm-actions/ vm-displays separation wrong (actions=%d displays=%d)", ai, di)
+	}
+	if strings.Index(b, "vm-displays") < strings.Index(b, "vm-xml") {
+		t.Fatal("detail page: display section must be after the domain XML")
 	}
 
 	// the listing has no actions at all — state and links only

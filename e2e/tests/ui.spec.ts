@@ -172,6 +172,19 @@ test('VM detail page shows live info and the domain XML', async ({ page }) => {
   await expect(page.locator('a[href$="/spice"]')).toBeVisible();
   await expect(page.locator('a[href$="/vnc"]')).toHaveCount(0);
 
+  // Mistake-proofing: the state-control block and the display links
+  // are physically separated on the page — the state actions come
+  // first (their own boxed panel, just under the info table) and the
+  // display section sits after the domain XML, so the frequently
+  // clicked safe links are far from the destructive buttons.
+  const actionsBox = await page.locator('.vm-actions').boundingBox();
+  const displaysBox = await page.locator('.vm-displays').boundingBox();
+  const xmlBox = await page.locator('#vm-xml').boundingBox();
+  expect(actionsBox && displaysBox && xmlBox).toBeTruthy();
+  expect(actionsBox!.y).toBeLessThan(xmlBox!.y);
+  expect(xmlBox!.y).toBeLessThan(displaysBox!.y);
+  expect(displaysBox!.y - actionsBox!.y).toBeGreaterThan(200);
+
   // The Refresh link re-renders the same page.
   await page.locator('a.btn[href$="/vms/debian-dev"]').click();
   await expect(page.locator('h2')).toHaveText('debian-dev');
