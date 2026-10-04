@@ -160,13 +160,15 @@ memory, IP (from `domifaddr`), and — for a running domain — its live
 display address. Click a VM's name for its **detail page**: live state,
 resource info, display addresses, the usual actions, and the current
 domain XML (`virsh dumpxml`) with a copy button. Row actions on the
-server page: **Start / Shutdown / Destroy / Reboot**, plus open a VM's
-console / VNC / SPICE page. The actions that interrupt a running VM
-(shutdown, destroy, reboot) are guarded by a confirmation dialog;
-start is not. The server is edited in place from its page as well
-(host/port/user, name, SSH credentials). Defining or undefining
-domains is not offered in the UI (virtweb manages existing VMs); the
-REST API below still exposes it for automation.
+The server page's VM table is a *view*: state, resources, IP, and
+links to open a VM's console / VNC / SPICE page — no actions in the
+table. All actions live on the VM's detail page:
+**Start / Shutdown / Destroy / Reboot**, where the actions that
+interrupt a running VM (shutdown, destroy, reboot) are guarded by a
+confirmation dialog; start is not. The server is edited in place from
+its page as well (host/port/user, name, SSH credentials). Defining
+or undefining domains is not offered in the UI (virtweb manages
+existing VMs); the REST API below still exposes it for automation.
 
 ### HTTP API
 

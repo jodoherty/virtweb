@@ -197,13 +197,13 @@ test('interrupting actions require a confirm dialog; rejecting leaves the VM run
   // Start debian-dev, then try to shut it down from the server page.
   await api.action(serverId, 'debian-dev', 'destroy').catch(() => {});
   await api.action(serverId, 'debian-dev', 'start');
-  await page.goto(`${url()}/servers/${serverId}`);
-  const row = page.locator('.vm-table tr', { hasText: 'debian-dev' });
-  // wait for the stub to finish booting (the row re-renders on reload)
+  // Actions live on the VM detail page, not the listing.
+  await page.goto(`${url()}/servers/${serverId}/vms/debian-dev`);
+  // wait for the stub to finish booting (the page re-renders on reload)
   await expect
     .poll(async () => {
       await page.reload();
-      return row.innerText();
+      return page.locator('body').innerText();
     }, { message: 'debian-dev running', timeout: 10000 })
     .toContain('running');
 
@@ -216,23 +216,23 @@ test('interrupting actions require a confirm dialog; rejecting leaves the VM run
     else await d.accept();
   });
 
-  await row.locator('form[action$="/shutdown"] button').click();
+  await page.locator('form[action$="/shutdown"] button').click();
   await expect
     .poll(() => confirmShown, { message: 'confirm dialog shown' })
     .toBeTruthy();
 
   // The action was cancelled: the PRG redirect re-renders the page and
-  // the row still reports running.
+  // the VM still reports running.
   await page.waitForLoadState('load');
   await expect
-    .poll(async () => row.innerText(), { message: 'still running after reject' })
+    .poll(async () => page.locator('body').innerText(), { message: 'still running after reject' })
     .toContain('running');
   expect((await api.listVMs(serverId)).find((v) => v.name === 'debian-dev')?.state)
     .toBe('running');
 
   // Accepting the dialog does the action.
   reject = false;
-  await row.locator('form[action$="/shutdown"] button').click();
+  await page.locator('form[action$="/shutdown"] button').click();
   await expect
     .poll(async () => (await api.listVMs(serverId)).find((v) => v.name === 'debian-dev')?.state,
       { message: 'shut off after accept' })
@@ -246,20 +246,31 @@ test('VM list shows the default table', async ({ page }) => {
   await expect(page.locator('.vm-table', { hasText: 'win10' })).toBeVisible();
 });
 
-test('Start button takes the row to running', async ({ page }) => {
+test('Start on the detail page takes the VM to running', async ({ page }) => {
   await api.action(serverId, 'debian-dev', 'destroy').catch(() => {});
-  await page.goto(`${url()}/servers/${serverId}`);
-  const row = page.locator('tr', { hasText: 'debian-dev' });
-  await row.getByRole('button', { name: 'Start' }).click();
-  // The table is server-rendered with no auto-refresh: the PRG redirect
-  // reloads the page once (showing "starting"). Poll by reloading until the
-  // stub has finished booting and the row reports running.
+  await page.goto(`${url()}/servers/${serverId}/vms/debian-dev`);
+  await page.getByRole('button', { name: 'Start' }).click();
+  // The detail page is server-rendered with no auto-refresh: the PRG
+  // redirect reloads the page once (showing "starting"). Poll by
+  // reloading until the stub has finished booting.
   await expect
     .poll(async () => {
       await page.reload();
-      return row.innerText();
+      return page.locator('body').innerText();
     }, { message: 'debian-dev running', timeout: 10000 })
     .toContain('running');
+});
+
+test('the VM listing has no actions, only state and display links', async ({ page }) => {
+  await page.goto(`${url()}/servers/${serverId}`);
+  const row = page.locator('.vm-table tr', { hasText: 'debian-dev' });
+  await expect(row.locator('form')).toHaveCount(0);
+  await expect(row.locator('button')).toHaveCount(0);
+  // state + details link + display links remain (state value
+  // depends on other specs; any known libvirt state is fine)
+  await expect(row).toHaveText(/(running|shut off|starting)/);
+  await expect(row.locator('a[href$="/vms/debian-dev"]')).toBeVisible();
+  await expect(row.locator('a[href$="/console"]')).toBeVisible();
 });
 
 test('console page: type a command, read the reply', async ({ page }) => {

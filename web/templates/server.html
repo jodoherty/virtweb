@@ -33,13 +33,6 @@
     <td>{{if .Memory}}{{.Memory}} MiB{{else}}–{{end}}</td>
     <td>{{if .IP}}{{.IP}}{{else}}–{{end}}</td>
     <td class="actions">
-      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/start"><button>Start</button></form>
-      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/shutdown"
-            data-confirm="Shut down {{.Name}}? This interrupts the VM."><button>Shutdown</button></form>
-      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/destroy"
-            data-confirm="Destroy {{.Name}} now? This kills the VM (forced power-off) without a graceful shutdown."><button class="danger">Destroy</button></form>
-      <form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/reboot"
-            data-confirm="Reboot {{.Name}}? This interrupts the VM."><button>Reboot</button></form>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">Console</a>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/vnc">VNC</a>
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/spice">SPICE</a>

@@ -45,10 +45,7 @@ var testWeb = fstest.MapFS{
 	"templates/server.html": &fstest.MapFile{Data: []byte(
 		`{{define "server"}}<h1>{{.Server.Name}}</h1>{{range .VMs}}<div class="vm">{{.Name}} ` +
 			`{{.State}}` +
-			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/start"></form>` +
-			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/shutdown" data-confirm="Shut down?"></form>` +
-			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/destroy" data-confirm="Destroy now?"></form>` +
-			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/reboot" data-confirm="Reboot?"></form>` +
+			`<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}">{{.Name}}</a>` +
 			`<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">console</a></div>{{end}}` +
 			`{{if not .VMs}}<p class="muted">no vms</p>{{end}}{{end}}`)},
 	"templates/console.html": &fstest.MapFile{Data: []byte(
@@ -357,29 +354,32 @@ func TestInterruptActionsConfirmed(t *testing.T) {
 		return b[i : i+j]
 	}
 
-	for _, page := range []string{"/servers/" + srv.ID,
-		"/servers/" + srv.ID + "/vms/debian-dev"} {
-		b := body(doGet(t, ui.Routes(), page))
-		for _, action := range []string{"shutdown", "destroy", "reboot"} {
-			tag := formTag(b, action)
-			if tag == "" {
-				t.Fatalf("%s: missing %s form", page, action)
-			}
-			if !strings.Contains(tag, "data-confirm=") {
-				t.Fatalf("%s: %s form has no data-confirm: %q", page, action, tag)
-			}
-		}
-		tag := formTag(b, "start")
+	// the detail page carries the actions
+	b := body(doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/debian-dev"))
+	for _, action := range []string{"shutdown", "destroy", "reboot"} {
+		tag := formTag(b, action)
 		if tag == "" {
-			t.Fatalf("%s: missing start form", page)
+			t.Fatalf("detail page: missing %s form", action)
 		}
-		if strings.Contains(tag, "data-confirm=") {
-			t.Fatalf("%s: start form unexpectedly confirmed: %q", page, tag)
+		if !strings.Contains(tag, "data-confirm=") {
+			t.Fatalf("detail page: %s form has no data-confirm: %q", action, tag)
+		}
+	}
+	if tag := formTag(b, "start"); tag == "" {
+		t.Fatal("detail page: missing start form")
+	} else if strings.Contains(tag, "data-confirm=") {
+		t.Fatalf("detail page: start form unexpectedly confirmed: %q", tag)
+	}
+
+	// the listing has no actions at all — state and links only
+	b = body(doGet(t, ui.Routes(), "/servers/"+srv.ID))
+	for _, action := range []string{"start", "shutdown", "destroy", "reboot"} {
+		if tag := formTag(b, action); tag != "" {
+			t.Fatalf("listing offers %s form: %q", action, tag)
 		}
 	}
 
 	// define/undefine are no longer offered in the UI
-	b := body(doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/debian-dev"))
 	if strings.Contains(b, "define") || strings.Contains(b, "undefine") {
 		t.Fatal("detail page still offers define/undefine")
 	}
