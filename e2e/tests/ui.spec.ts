@@ -104,9 +104,15 @@ test('VM detail page shows live info and the domain XML', async ({ page }) => {
   await expect(page.locator('#vm-xml')).toContainText('<name>debian-dev</name>');
   await expect(page.locator('#copy-xml')).toBeVisible();
 
-  // Action forms + display links are offered from the detail page.
+  // Action forms + display links are offered from the detail page, and
+  // the interrupting actions (shutdown/destroy/reboot) are guarded by
+  // the confirm dialog (data-confirm), while start is not.
   await expect(page.locator('form[action$="/start"]')).toBeVisible();
-  await expect(page.locator('form[action$="/undefine"]')).toBeVisible();
+  for (const a of ['shutdown', 'destroy', 'reboot']) {
+    await expect(page.locator(`form[action$="/${a}"]`)).toHaveAttribute(
+      'data-confirm', /.+/);
+  }
+  await expect(page.locator('form[action$="/start"]')).not.toHaveAttribute('data-confirm');
   await expect(page.locator('a[href$="/console"]')).toBeVisible();
 
   // The Refresh link re-renders the same page.
@@ -139,41 +145,50 @@ test('VM detail page shows the console as in use', async ({ page }, testInfo) =>
   }
 });
 
-test('define a VM from XML, start it, destroy it', async ({ page }) => {
-  const name = `def-${Date.now()}`;
-  const xml = `<domain type='kvm'>
-  <name>${name}</name>
-  <memory unit='MiB'>2048</memory>
-  <vcpu>2</vcpu>
-</domain>`;
+test('interrupting actions require a confirm dialog; rejecting leaves the VM running', async ({ page }) => {
+  // Start debian-dev, then try to shut it down from the server page.
+  await api.action(serverId, 'debian-dev', 'destroy').catch(() => {});
+  await api.action(serverId, 'debian-dev', 'start');
   await page.goto(`${url()}/servers/${serverId}`);
-  // The define panel is a collapsed <details>; open it.
-  await page.locator('.define-vm summary').click();
-  await page.locator('#define-xml').fill(xml);
-  await page.locator('#define-btn').click();
-  await expect(page.locator('.banner.ok')).toContainText(`defined ${name}`);
-  await expect(
-    page.locator('.vm-table tr', { hasText: name }),
-  ).toContainText('shut off');
-
-  // Start it from its row. The table is server-rendered with no
-  // auto-refresh: the PRG redirect reloads once ("starting"), so poll
-  // by reloading until the stub has finished booting.
-  const row = page.locator('.vm-table tr', { hasText: name });
-  await row.locator('form[action$="/start"] button').click();
-  await expect(page.locator('.banner.ok')).toContainText(`start ${name}`);
+  const row = page.locator('.vm-table tr', { hasText: 'debian-dev' });
+  // wait for the stub to finish booting (the row re-renders on reload)
   await expect
     .poll(async () => {
       await page.reload();
       return row.innerText();
-    }, { message: `${name} running`, timeout: 10000 })
+    }, { message: 'debian-dev running', timeout: 10000 })
     .toContain('running');
 
-  // Clean up (keep the stub env tidy for the other specs): power off,
-  // then remove the definition (destroy alone leaves it defined).
-  await api.action(serverId, name, 'destroy');
-  await api.deleteVM(serverId, name);
-  expect((await api.listVMs(serverId)).some((v) => v.name === name)).toBe(false);
+  let confirmShown = false;
+  let reject = true;
+  page.on('dialog', async (d) => {
+    confirmShown = true;
+    expect(d.message()).toContain('debian-dev');
+    if (reject) await d.dismiss(); // reject: the VM must keep running
+    else await d.accept();
+  });
+
+  await row.locator('form[action$="/shutdown"] button').click();
+  await expect
+    .poll(() => confirmShown, { message: 'confirm dialog shown' })
+    .toBeTruthy();
+
+  // The action was cancelled: the PRG redirect re-renders the page and
+  // the row still reports running.
+  await page.waitForLoadState('load');
+  await expect
+    .poll(async () => row.innerText(), { message: 'still running after reject' })
+    .toContain('running');
+  expect((await api.listVMs(serverId)).find((v) => v.name === 'debian-dev')?.state)
+    .toBe('running');
+
+  // Accepting the dialog does the action.
+  reject = false;
+  await row.locator('form[action$="/shutdown"] button').click();
+  await expect
+    .poll(async () => (await api.listVMs(serverId)).find((v) => v.name === 'debian-dev')?.state,
+      { message: 'shut off after accept' })
+    .toBe('shut off');
 });
 
 test('VM list shows the default table', async ({ page }) => {

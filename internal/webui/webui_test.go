@@ -29,8 +29,10 @@ var testWeb = fstest.MapFS{
 	"templates/vm.html": &fstest.MapFile{Data: []byte(
 		`{{define "vm"}}<h2>{{.VM.Name}}</h2>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/start"></form>` +
+			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/shutdown" data-confirm="Shut down?"></form>` +
+			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/destroy" data-confirm="Destroy now?"></form>` +
+			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/reboot" data-confirm="Reboot?"></form>` +
 			`<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
-			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/undefine"></form>` +
 			`<pre id="vm-xml">{{.XML}}</pre>` +
 			`<script id="vm-cfg" type="application/json">{{.CfgJSON}}</script>{{end}}`)},
 	"templates/servers.html": &fstest.MapFile{Data: []byte(
@@ -39,7 +41,12 @@ var testWeb = fstest.MapFS{
 			`<form method="post" action="/servers"></form>{{end}}`)},
 	"templates/server.html": &fstest.MapFile{Data: []byte(
 		`{{define "server"}}<h1>{{.Server.Name}}</h1>{{range .VMs}}<div class="vm">{{.Name}} ` +
-			`{{.State}} <a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">console</a></div>{{end}}` +
+			`{{.State}}` +
+			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/start"></form>` +
+			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/shutdown" data-confirm="Shut down?"></form>` +
+			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/destroy" data-confirm="Destroy now?"></form>` +
+			`<form method="post" action="/servers/{{$.Server.ID}}/vms/{{q .Name}}/reboot" data-confirm="Reboot?"></form>` +
+			`<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">console</a></div>{{end}}` +
 			`{{if not .VMs}}<p class="muted">no vms</p>{{end}}{{end}}`)},
 	"templates/console.html": &fstest.MapFile{Data: []byte(
 		`{{define "console"}}{{if not .Running}}<div class="banner warn">shut off</div>{{else}}` +
@@ -249,30 +256,6 @@ func TestUpdateServerForm(t *testing.T) {
 	}
 }
 
-func TestDefineVMForm(t *testing.T) {
-	ui, st := newTestUI(t)
-	srv := addServer(t, st)
-
-	// valid define
-	form := url.Values{}
-	form.Set("xml", "<domain type='kvm'><name>newvm</name></domain>")
-	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form)
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("got %d, want 303: %s", w.Code, body(w))
-	}
-	if loc := w.Header().Get("Location"); !strings.Contains(loc, "ok=") {
-		t.Fatalf("Location = %q, want ok banner", loc)
-	}
-
-	// invalid (no name)
-	form2 := url.Values{}
-	form2.Set("xml", "<domain type='kvm'></domain>")
-	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form2)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("got %d, want 400", w.Code)
-	}
-}
-
 func TestVMPage(t *testing.T) {
 	ui, st := newTestUI(t)
 	srv := addServer(t, st)
@@ -289,7 +272,7 @@ func TestVMPage(t *testing.T) {
 		}
 	}
 	// actions + detail links are present
-	for _, want := range []string{"/vms/debian-dev/start", "/vms/debian-dev/console", "/vms/debian-dev/undefine"} {
+	for _, want := range []string{"/vms/debian-dev/start", "/vms/debian-dev/console", "/vms/debian-dev/shutdown"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("page missing link %q", want)
 		}
@@ -311,33 +294,52 @@ func TestVMPage(t *testing.T) {
 	}
 }
 
-func TestUndefineVMForm(t *testing.T) {
+// TestInterruptActionsConfirmed: actions that interrupt a running VM
+// (shutdown, destroy, reboot) must carry the data-confirm attribute
+// (the confirm dialog); start must not.
+func TestInterruptActionsConfirmed(t *testing.T) {
 	ui, st := newTestUI(t)
 	srv := addServer(t, st)
 
-	form := url.Values{}
-	form.Set("xml", "<domain type='kvm'><name>newvm</name></domain>")
-	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/define", form)
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("define got %d, want 303", w.Code)
-	}
-	if got := len(st.List()); got != 1 {
-		t.Fatalf("servers = %d, want 1", got)
-	}
-
-	// undefine it
-	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/newvm/undefine", url.Values{})
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("undefine got %d, want 303: %s", w.Code, body(w))
-	}
-	if loc := w.Header().Get("Location"); !strings.Contains(loc, "ok=") {
-		t.Fatalf("Location = %q, want ok banner", loc)
+	// formTag returns the rendered <form ...></form> block that posts to
+	// the given action, "" when absent.
+	formTag := func(b, action string) string {
+		i := strings.Index(b, "/vms/debian-dev/"+action+"\"")
+		if i < 0 {
+			return ""
+		}
+		j := strings.Index(b[i:], "</form>")
+		if j < 0 {
+			return ""
+		}
+		return b[i : i+j]
 	}
 
-	// unknown VM -> error banner (still 303, with err=)
-	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/vms/ghost/undefine", url.Values{})
-	if loc := w.Header().Get("Location"); !strings.Contains(loc, "err=") {
-		t.Fatalf("Location = %q, want err banner", loc)
+	for _, page := range []string{"/servers/" + srv.ID,
+		"/servers/" + srv.ID + "/vms/debian-dev"} {
+		b := body(doGet(t, ui.Routes(), page))
+		for _, action := range []string{"shutdown", "destroy", "reboot"} {
+			tag := formTag(b, action)
+			if tag == "" {
+				t.Fatalf("%s: missing %s form", page, action)
+			}
+			if !strings.Contains(tag, "data-confirm=") {
+				t.Fatalf("%s: %s form has no data-confirm: %q", page, action, tag)
+			}
+		}
+		tag := formTag(b, "start")
+		if tag == "" {
+			t.Fatalf("%s: missing start form", page)
+		}
+		if strings.Contains(tag, "data-confirm=") {
+			t.Fatalf("%s: start form unexpectedly confirmed: %q", page, tag)
+		}
+	}
+
+	// define/undefine are no longer offered in the UI
+	b := body(doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/debian-dev"))
+	if strings.Contains(b, "define") || strings.Contains(b, "undefine") {
+		t.Fatal("detail page still offers define/undefine")
 	}
 }
 

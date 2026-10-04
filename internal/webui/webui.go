@@ -66,8 +66,6 @@ func (u *UI) Routes() http.Handler {
 	mux.HandleFunc("POST /servers/{id}/update", u.handleUpdateServer)
 	mux.HandleFunc("POST /servers/{id}/remove", u.handleRemoveServer)
 	mux.HandleFunc("POST /servers/{id}/vms/{name}/{action}", u.handleVMAction)
-	mux.HandleFunc("POST /servers/{id}/vms/define", u.handleDefineVM)
-	mux.HandleFunc("POST /servers/{id}/vms/{name}/undefine", u.handleUndefineVM)
 	mux.HandleFunc("GET /servers/{id}/vms/{name}/console", u.handleConsolePage)
 	mux.HandleFunc("GET /servers/{id}/vms/{name}/vnc", u.handleVNCPage)
 	mux.HandleFunc("GET /servers/{id}/vms/{name}/spice", u.handleSpicePage)
@@ -272,61 +270,6 @@ func (u *UI) handleVMPage(w http.ResponseWriter, r *http.Request) {
 	})
 	p.CfgJSON = template.JS(cj)
 	u.render(w, p)
-}
-
-// handleDefineVM creates a domain from the XML in the form's xml
-// field; start=1 also boots it.
-func (u *UI) handleDefineVM(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	id := r.PathValue("id")
-	xml := strings.TrimSpace(r.Form.Get("xml"))
-	name := virt.DomainName(xml)
-	if name == "" {
-		http.Error(w, "invalid domain XML: missing <name> element", http.StatusBadRequest)
-		return
-	}
-	_, b, err := u.backend(id)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := b.Define(r.Context(), xml); err != nil {
-		http.Redirect(w, r, "/servers/"+id+"?err="+url.QueryEscape("define "+name+": "+err.Error()),
-			http.StatusSeeOther)
-		return
-	}
-	msg := "defined " + name
-	if r.Form.Get("start") != "" {
-		if err := b.Start(r.Context(), name); err != nil {
-			// Defined but the start failed: say so.
-			http.Redirect(w, r, "/servers/"+id+"?err="+url.QueryEscape(
-				"defined "+name+", but start failed: "+err.Error()),
-				http.StatusSeeOther)
-			return
-		}
-		msg = "defined and started " + name
-	}
-	http.Redirect(w, r, "/servers/"+id+"?ok="+url.QueryEscape(msg), http.StatusSeeOther)
-}
-
-// handleUndefineVM removes a domain definition (must be shut off).
-func (u *UI) handleUndefineVM(w http.ResponseWriter, r *http.Request) {
-	id, name := r.PathValue("id"), r.PathValue("name")
-	_, b, err := u.backend(id)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := b.Undefine(r.Context(), name); err != nil {
-		http.Redirect(w, r, "/servers/"+id+"?err="+url.QueryEscape("undefine "+name+": "+err.Error()),
-			http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, "/servers/"+id+"?ok="+url.QueryEscape("undefined "+name),
-		http.StatusSeeOther)
 }
 
 func (u *UI) handleVMAction(w http.ResponseWriter, r *http.Request) {

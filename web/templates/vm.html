@@ -13,12 +13,12 @@
 </table>
 <p class="actions">
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/start"><button>Start</button></form>
-  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/shutdown"><button>Shutdown</button></form>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/shutdown"
+        data-confirm="Shut down {{.VM.Name}}? This interrupts the VM."><button>Shutdown</button></form>
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/destroy"
-        data-confirm="Destroy {{.VM.Name}} now?"><button class="danger">Destroy</button></form>
-  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/reboot"><button>Reboot</button></form>
-  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/undefine"
-        data-confirm="Undefine {{.VM.Name}}? This deletes the domain definition (it must be shut off)."><button class="danger">Undefine</button></form>
+        data-confirm="Destroy {{.VM.Name}} now? This kills the VM (forced power-off) without a graceful shutdown."><button class="danger">Destroy</button></form>
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/reboot"
+        data-confirm="Reboot {{.VM.Name}}? This interrupts the VM."><button>Reboot</button></form>
   <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/console">Console</a>
   <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>
   <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/spice">SPICE</a>

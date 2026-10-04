@@ -152,13 +152,13 @@ memory, IP (from `domifaddr`), and — for a running domain — its live
 display address. Click a VM's name for its **detail page**: live state,
 resource info, display addresses, the usual actions, and the current
 domain XML (`virsh dumpxml`) with a copy button. Row actions on the
-server page: **Start / Shutdown / Destroy / Reboot / Undefine**
-(Undefine deletes the domain definition and is only offered when the
-domain is shut off; it asks for confirmation), plus open a VM's console
-/ VNC / SPICE page. A server page also has a collapsed **"Define a VM"**
-panel: paste a libvirt domain XML document, optionally "start
-immediately", submit. The server is edited in place from its page as
-well (host/port/user, name, display mode).
+server page: **Start / Shutdown / Destroy / Reboot**, plus open a VM's
+console / VNC / SPICE page. The actions that interrupt a running VM
+(shutdown, destroy, reboot) are guarded by a confirmation dialog;
+start is not. The server is edited in place from its page as well
+(host/port/user, name, SSH credentials). Defining or undefining
+domains is not offered in the UI (virtweb manages existing VMs); the
+REST API below still exposes it for automation.
 
 ### HTTP API
 
