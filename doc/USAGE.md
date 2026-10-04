@@ -267,8 +267,7 @@ stored in the data dir rather than on the host, so the container only
 needs a **data-dir volume** — no key files to mount.
 
 ```sh
-make dist                      # builds dist/virtweb
-docker build -t virtweb .      # alpine + openssh-client + sshpass + dist/virtweb-linux-amd64
+docker build -t virtweb .      # golang multi-stage build -> debian:trixie + openssh-client + sshpass
 docker run -d --name virtweb \
   -v $(pwd)/virtweb-data:/home/virtweb/.virtweb \
   virtweb -addr 0.0.0.0:8080

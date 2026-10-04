@@ -1,0 +1,75 @@
+# Example deployment: virtweb behind Traefik (v3), TLS from
+# Let's Encrypt, HTTP basic auth at the edge.
+#
+# Topology:
+#
+#   internet --TLS--> traefik :443 (basic auth) --plain HTTP--> virtweb :8080
+#
+# Before you start:
+#
+#   - Replace `virtweb.example.test` (two places) and the ACME email
+#     with your real hostname. example.test is a placeholder: Let's
+#     Encrypt only issues for real domains, so you need an A record
+#     for your hostname pointing at this host. (DNS-01 is needed if
+#     your hostname is behind a CNAME chain; the HTTP-01 default here
+#     works for direct A records.)
+#   - Replace the basicAuth placeholder with a real hash:
+#         traefik password "your-password"
+#     or:
+#         htpasswd -nbBC 10 your-user "your-password"
+#   - The image is built from the repo (multi-stage Dockerfile at the
+#     repo root):   docker build -t virtweb .
+#     so the build context here is `../../` relative to this file.
+#
+# virtweb runs plain HTTP inside the compose network — Traefik
+# terminates TLS, so no -tls/-proxy-protocol flags are needed in this
+# topology (those are for the L4 TCP pass-through setup, see
+# doc/SECURITY.md). The data dir volume holds the server list and the
+# per-server SSH credentials; it is the only state that must survive.
+
+services:
+  virtweb:
+    image: virtweb:latest
+    # build:
+    #   context: ../../
+    restart: unless-stopped
+    command: ["-addr", "0.0.0.0:8080"]
+    volumes:
+      - virtweb-data:/home/virtweb/.virtweb
+    networks: [internal]
+    labels:
+      # exposedbydefault is false on traefik; opt in explicitly
+      - "traefik.enable=true"
+      - "traefik.http.routers.virtweb.rule=Host(`virtweb.example.test`)"
+      - "traefik.http.routers.virtweb.entrypoints=websecure"
+      - "traefik.http.routers.virtweb.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.virtweb.middlewares=basic-auth"
+      - "traefik.http.middlewares.basic-auth.basicAuth.users=your-user:REPLACE_WITH_BCRYPT_HASH"
+      - "traefik.http.services.virtweb.loadbalancer.server.port=8080"
+
+  traefik:
+    image: docker.io/library/traefik:v3.7
+    restart: unless-stopped
+    ports:
+      - "80:80"    # ACME HTTP-01 challenge; everything else redirects to HTTPS
+      - "443:443"
+    volumes:
+      - traefik-certs:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # provider: service discovery
+    networks: [internal]
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.test"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+
+networks:
+  internal:
+
+volumes:
+  virtweb-data:   # server list + per-server SSH credentials (mode 0600)
+  traefik-certs:  # Let's Encrypt account + certificates

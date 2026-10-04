@@ -108,3 +108,7 @@ For the L4 pass-through + PROXY protocol + mTLS topology, see
 above: the proxy forwards the raw TLS stream (with the PROXY header
 outside it), so the no-buffering requirement is on the TCP-forwarding
 path, and virtweb terminates TLS/mTLS itself.
+
+A complete example — docker-compose with Traefik, Let's Encrypt TLS
+and basic auth (L7, plain-HTTP virtweb behind it) — lives in
+[deployment-example/](deployment-example/).
