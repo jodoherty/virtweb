@@ -272,9 +272,6 @@ func (u *UI) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 		Key:      strings.TrimSpace(f.Get("key")),
 		Password: strings.TrimSpace(f.Get("password")),
 	}
-	if f.Get("removeKey") != "" {
-		srv.Key = ""
-	}
 	if p := strings.TrimSpace(f.Get("port")); p != "" {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 1 || n > 65535 {

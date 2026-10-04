@@ -11,12 +11,11 @@
       <input name="port" placeholder="port (22)" type="number" min="1" max="65535" value="{{if .Server.Port}}{{.Server.Port}}{{end}}">
       <input name="uri" placeholder="libvirt URI" value="{{.Server.URI}}">
     </div>
-    <textarea name="key" rows="3" class="keybox" placeholder="{{if .Server.Key}}paste a new key to replace the stored one{{else}}SSH private key (paste, optional){{end}}"></textarea>
+    <textarea name="key" rows="3" class="keybox" placeholder="SSH private key (paste, optional)">{{.Server.Key}}</textarea>
     <div class="row">
       <input name="password" placeholder="ssh password (optional)" type="password"{{if .Server.Password}} value="{{.Server.Password}}"{{end}}>
-      {{if .Server.Key}}<label class="small"><input type="checkbox" name="removeKey" value="1"> remove stored key</label>{{end}}
     </div>
-    <p class="muted small">Paste a key to replace the stored one ({{if .Server.Key}}a key is stored{{else}}none stored{{end}}); leaving it empty keeps the current key. Password: needs <code>sshpass</code>. Both are stored in the data dir and used from temp files per connection.</p>
+    <p class="muted small">Both credentials are pre-filled from the stored definition: edit to replace, clear to remove. Password needs <code>sshpass</code>. Both are stored in the data dir and used from temp files per connection.</p>
     <button type="submit">Save</button>
   </form>
 </details>

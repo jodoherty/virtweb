@@ -46,8 +46,10 @@ with client-cert auth at the edge, the protections below address what an
   register a host they can only reach with stored credentials (this
   is also what makes container deployments work: no host-side key
   files to mount). The API responses never carry the key material,
-  only a `keySet` flag; the password is returned so the edit form can
-  pre-fill it (trusted mTLS path). Both empty: no credentials are
+  only a `keySet` flag; the edit form (server-rendered from the store,
+  not the API) pre-fills both the key and the password, so a routine
+  edit doesn't wipe credentials and clearing a box removes it (trusted
+  mTLS path). Both empty: no credentials are
   offered — the server is reachable only via the virtweb host's own
   ssh setup.
 

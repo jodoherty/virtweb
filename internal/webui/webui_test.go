@@ -263,7 +263,8 @@ func TestUpdateServerForm(t *testing.T) {
 		t.Fatalf("credential not cleared: %+v (err %v)", got, err)
 	}
 
-	// removeKey drops the stored key without a replacement.
+	// The edit form pre-fills the stored key; clearing the box drops it.
+	// Re-store the key, then submit the form without one: it is gone.
 	form3 := url.Values{}
 	form3.Set("name", "renamed")
 	form3.Set("user", "u2")
@@ -281,10 +282,9 @@ func TestUpdateServerForm(t *testing.T) {
 	form4.Set("name", "renamed")
 	form4.Set("user", "u2")
 	form4.Set("host", "h2")
-	form4.Set("removeKey", "1")
 	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form4)
 	if w.Code != http.StatusSeeOther {
-		t.Fatalf("remove key got %d, want 303", w.Code)
+		t.Fatalf("clear key got %d, want 303", w.Code)
 	}
 	got, err = st.Get(srv.ID)
 	if err != nil || got.Key != "" {

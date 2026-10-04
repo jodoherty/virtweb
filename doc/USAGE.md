@@ -149,7 +149,9 @@ The server list, its persisted `servers.json` (mode 0600), and each
 server's shape (`name`, `user`, `host`, `port`, `uri`, and optionally
 `key`, `password`) are what virtweb keeps — nothing else is stored.
 `servers.json` holds the credentials, so keep the data dir private;
-the API never returns the key material (only a `keySet` flag). A
+the API never returns the key material (only a `keySet` flag). The
+server edit form does show the stored credentials (key and password,
+pre-filled): edit them to replace, clear them to remove. A
 server you can't reach simply shows an error on its page until the
 SSH access is fixed.
 
