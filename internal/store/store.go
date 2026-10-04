@@ -12,7 +12,8 @@ import (
 	"sync"
 
 	"github.com/jodoherty/virtweb/internal/virt"
-)
+
+	"strings")
 
 // Store is a file-backed, concurrency-safe store of server definitions.
 type Store struct {
@@ -59,6 +60,25 @@ func (s *Store) Get(id string) (virt.Server, error) {
 }
 
 // Validate checks a server definition for sanity.
+// KeySyntaxError reports whether a non-empty key looks like a private
+// key (PEM block). "" is a valid (absent) key.
+func KeySyntaxError(key string) error {
+	if key == "" {
+		return nil
+	}
+	for _, marker := range []string{
+		"-----BEGIN OPENSSH PRIVATE KEY-----",
+		"-----BEGIN RSA PRIVATE KEY-----",
+		"-----BEGIN EC PRIVATE KEY-----",
+		"-----BEGIN PRIVATE KEY-----",
+	} {
+		if strings.Contains(key, marker) {
+			return nil
+		}
+	}
+	return errors.New("key does not look like a private key (expected a PEM block)")
+}
+
 func Validate(srv virt.Server) error {
 	if srv.Name == "" {
 		return errors.New("name is required")

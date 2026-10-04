@@ -41,10 +41,12 @@ type Std struct {
 	// StrictHostKeyChecking is the value for -o StrictHostKeyChecking=;
 	// "accept-new" when empty (trust first contact, verify thereafter).
 	StrictHostKeyChecking string
-	// Identity, when set, is passed to ssh as -i and — via
-	// IdentitiesOnly=yes — excludes the ssh agent and the ~/.ssh
-	// identity defaults, so only the named key is offered.
-	Identity string
+	// Key, when set, is the SSH private key material (PEM). It is
+	// written to a 0600 temp file per call and passed to ssh as -i —
+	// and via IdentitiesOnly=yes excludes the ssh agent and the ~/.ssh
+	// identity defaults, so only this key is offered. The temp file is
+	// removed after the call.
+	Key string
 	// Password, when set, is offered for SSH password auth by wrapping
 	// ssh in sshpass (-f <tempfile>, mode 0600, removed after the call,
 	// so it never appears in a process list). BatchMode is dropped for
@@ -81,10 +83,10 @@ func (s *Std) baseOpts(port int) []string {
 		"StrictHostKeyChecking=" + hostKey,
 		"ConnectTimeout=10",
 	}
-	// An explicit key is offered alone (no agent, no ~/.ssh defaults);
-	// a password needs the interactive prompt BatchMode would kill, so
-	// key-based calls stay non-interactive.
-	if s.Identity != "" {
+	// An explicit key is offered alone (no agent, no ~/.ssh defaults,
+	// see Std.Key); a password needs the interactive prompt BatchMode
+	// would kill, so passwordless calls stay non-interactive.
+	if s.Key != "" {
 		opts = append(opts, "IdentitiesOnly=yes")
 	}
 	if s.Password == "" {
@@ -94,9 +96,6 @@ func (s *Std) baseOpts(port int) []string {
 	args := []string{}
 	for _, o := range opts {
 		args = append(args, "-o", o)
-	}
-	if s.Identity != "" {
-		args = append(args, "-i", s.Identity)
 	}
 	if port > 0 && port != 22 {
 		args = append(args, "-p", strconv.Itoa(port))
@@ -118,18 +117,47 @@ func (s *Std) sshPath() string {
 	return "ssh"
 }
 
-// prepare returns the exec.Cmd for the ssh call. With a Password set it
-// wraps ssh in sshpass fed from a 0600 temp file (never argv); the
-// returned cleanup removes that file.
+// prepare returns the exec.Cmd for the ssh call. Credentials never
+// appear in argv: with a Password set, ssh is wrapped in sshpass fed
+// from a 0600 temp file; with a Key set, the key material is written
+// to a 0600 temp file passed via -i. The returned cleanup removes the
+// temp file(s).
 func (s *Std) prepare(ctx context.Context, args []string) (*exec.Cmd, func(), error) {
+	remove := []func(){}
+	cleanup := func() {
+		for _, f := range remove {
+			f()
+		}
+	}
+
+	if s.Key != "" {
+		key, err := os.CreateTemp("", "virtweb-sshkey-*")
+		if err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		remove = append(remove, func() { os.Remove(key.Name()) })
+		if _, err := key.WriteString(s.Key); err != nil {
+			key.Close()
+			cleanup()
+			return nil, func() {}, err
+		}
+		if err := key.Close(); err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		args = append([]string{"-i", key.Name()}, args...)
+	}
+
 	if s.Password == "" {
-		return exec.CommandContext(ctx, s.sshPath(), args...), func() {}, nil
+		return exec.CommandContext(ctx, s.sshPath(), args...), cleanup, nil
 	}
 	f, err := os.CreateTemp("", "virtweb-sshpass-*")
 	if err != nil {
+		cleanup()
 		return nil, func() {}, err
 	}
-	cleanup := func() { os.Remove(f.Name()) }
+	remove = append(remove, func() { os.Remove(f.Name()) })
 	if _, err := f.WriteString(s.Password); err != nil {
 		f.Close()
 		cleanup()

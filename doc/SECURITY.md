@@ -34,15 +34,22 @@ with client-cert auth at the edge, the protections below address what an
 - **SSH host-key policy** — `-host-key-checking` (default
   `accept-new`, i.e. trust-first-contact); use `no` with a seeded
   `known_hosts` on untrusted paths to a host.
-- **Per-server SSH credentials** — a server may name an `identityFile`
-  (private key path on the virtweb host) and/or a `password`. A key
-  path is offered *alone* (`-i` + `IdentitiesOnly=yes` — the ssh
-  agent and `~/.ssh` defaults are not used). A password is handed to ssh via
+- **Per-server SSH credentials** — a server may have a `key`
+  (private key material, OpenSSH/PKCS#8 PEM, pasted in the UI) and/or
+  a `password`. The key is written to a 0600 temp file per connection,
+  offered *alone* (`-i` + `IdentitiesOnly=yes` — the virtweb host's ssh
+  agent and `~/.ssh` defaults are not used), and the temp file is
+  removed afterwards. A password is handed to ssh via
   `sshpass -f <0600 temp file>` (never argv, so it is not visible in
-  the process list) and is stored in plaintext in `servers.json`
+  the process list). Both credentials live in `servers.json`
   (mode 0600) — the trade-off of letting an authenticated UI user
-  register a host they can only reach with a password. Both empty: the
-  local ssh agent/config is used as usual.
+  register a host they can only reach with stored credentials (this
+  is also what makes container deployments work: no host-side key
+  files to mount). The API responses never carry the key material,
+  only a `keySet` flag; the password is returned so the edit form can
+  pre-fill it (trusted mTLS path). Both empty: no credentials are
+  offered — the server is reachable only via the virtweb host's own
+  ssh setup.
 
 ## TLS, mTLS, and the PROXY protocol (reverse-proxy deployment)
 

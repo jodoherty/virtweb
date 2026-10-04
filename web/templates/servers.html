@@ -28,11 +28,11 @@
     <input name="port" placeholder="port (22)" type="number" min="1" max="65535">
     <input name="uri" placeholder="libvirt URI" value="qemu:///system">
   </div>
+  <textarea name="key" rows="3" class="keybox" placeholder="SSH private key (paste, optional)"></textarea>
   <div class="row">
-    <input name="identityFile" placeholder="ssh key path (optional)">
     <input name="password" placeholder="ssh password (optional)" type="password">
   </div>
-  <p class="muted small">Optional SSH credentials. A key path uses only that key (your ssh agent and ~/.ssh are ignored); a password needs <code>sshpass</code> installed and is stored in plaintext in the data dir. Both empty: your local ssh agent/config is used as usual.</p>
+  <p class="muted small">Optional SSH credentials. Paste the private key and/or set a password; they are stored with this server in virtweb's data dir (never on your machine) and used per connection from temp files (the key is offered to ssh alone, agent and other keys excluded). A password needs <code>sshpass</code> in the virtweb image. Both empty: no credentials are offered (the host must trust the virtweb container's own ssh setup).</p>
   <button type="submit">Add</button>
 </form>
 {{end}}

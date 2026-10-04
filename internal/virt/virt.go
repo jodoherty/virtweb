@@ -18,13 +18,17 @@ type Server struct {
 	Host string `json:"host"`
 	Port int    `json:"port"` // 0 means the default SSH port (22)
 	URI  string `json:"uri"`  // libvirt URI, e.g. "qemu:///system"
-	// IdentityFile is a private key path on the virtweb host. When set,
-	// only that key is offered — the ssh agent and ~/.ssh identity
-	// defaults are excluded. Empty = default identities.
-	IdentityFile string `json:"identityFile,omitempty"`
+	// Key, when set, is the SSH private key material (PEM, OpenSSH or
+	// PKCS#8) used for key auth. Stored with the server record in
+	// servers.json (0600) — like Password, a credential, not a file
+	// path: the operator pastes it in the UI and virtweb offers it to
+	// ssh from a per-call 0600 temp file, excluding the ssh agent and
+	// the ~/.ssh identity defaults (IdentitiesOnly=yes).
+	Key string `json:"key,omitempty"`
 	// Password, when set, is used for SSH password auth (via sshpass).
-	// Stored in plaintext in servers.json (0600); the sshpass binary
-	// must be available on the virtweb host.
+	// Stored in servers.json (0600); the sshpass binary must be
+	// available where virtweb runs. Key and Password can be combined
+	// (key tried first, password as fallback).
 	Password string `json:"password,omitempty"`
 }
 

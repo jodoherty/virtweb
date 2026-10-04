@@ -60,6 +60,54 @@ test('add server via form lands on the server page', async ({ page }) => {
   await api.deleteServer(servers.find((s) => s.name === name)?.id ?? '');
 });
 
+const e2eKey = "-----BEGIN OPENSSH PRIVATE KEY-----\npublished-fake-e2e-key\n-----END OPENSSH PRIVATE KEY-----\n";
+
+test('server credentials: key is stored server-side, masked in the API, replaceable from the edit form', async ({ page }) => {
+  // Create a server through the API with a key; the responses must
+  // carry keySet but never the material.
+  const name = `cred-${Date.now()}`;
+  const created = await api.addServer({ name, user: 'u', host: 'example.invalid', key: e2eKey });
+  try {
+    expect((created as Record<string, unknown>).keySet).toBe(true);
+    expect((created as Record<string, unknown>).key).toBeUndefined();
+    const listed = await api.listServers();
+    const view = listed.find((s) => s.id === created.id) as Record<string, unknown>;
+    expect(view.keySet).toBe(true);
+    expect(view.key).toBeUndefined();
+    const raw = await fetch(`${url()}/api/servers/${created.id}`).then((r) => r.text());
+    expect(raw).not.toContain('published-fake-e2e-key');
+
+    // The edit form offers a key textarea and a "remove stored key"
+    // checkbox; the key material itself is not displayed.
+    await page.goto(`${url()}/servers/${created.id}`);
+    await page.locator('.edit-server summary').click();
+    const keybox = page.locator('.edit-server textarea[name=key]');
+    await expect(keybox).toBeVisible();
+    expect(await keybox.inputValue()).not.toContain('published-fake-e2e-key');
+    await expect(page.locator('.edit-server input[name=removeKey]')).toBeVisible();
+
+    // Paste a replacement key and save; the stored key changes.
+    const replacement = '-----BEGIN OPENSSH PRIVATE KEY-----\nreplaced\n-----END OPENSSH PRIVATE KEY-----\n';
+    await keybox.fill(replacement);
+    await page.locator('.edit-server button[type=submit]').click();
+    await page.waitForLoadState('load');
+    const st2 = await api.listServers().then((ls) => ls.find((s) => s.id === created.id));
+    expect((st2 as Record<string, unknown>).keySet).toBe(true);
+
+    // Tick "remove stored key" and save; keySet drops.
+    await page.locator('.edit-server summary').click();
+    await page.locator('.edit-server input[name=removeKey]').check();
+    await page.locator('.edit-server button[type=submit]').click();
+    await page.waitForLoadState('load');
+    const st3 = await api.listServers().then((ls) => ls.find((s) => s.id === created.id));
+    expect((st3 as Record<string, unknown>).keySet).toBe(false);
+    // the checkbox disappears now that no key is stored
+    await expect(page.locator('.edit-server input[name=removeKey]')).toHaveCount(0);
+  } finally {
+    await api.deleteServer(created.id);
+  }
+});
+
 test('edit server form updates the definition in place', async ({ page }) => {
   await page.goto(`${url()}/servers/${serverId}`);
   // The edit panel is a collapsed <details>; open it.

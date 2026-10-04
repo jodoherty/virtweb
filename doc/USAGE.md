@@ -89,14 +89,19 @@ addr) — the console/VNC/SPICE streams must reach the browser
 **To build:** the Go toolchain (any recent version; the module declares
 its own minimum). That's it.
 
-**To run in production (`-backend ssh`), on the host that runs virtweb:**
+**To run in production (`-backend ssh`), on the host that runs virtweb
+(or in its container):**
 - Linux, with the OpenSSH client (`ssh`) in the default path. virtweb
   reaches each managed host by running `virsh` over SSH — it never opens
   a direct socket to a hypervisor and never links an SSH library.
-  Fixed ssh options: `BatchMode=yes`,
-  `StrictHostKeyChecking=accept-new`, `ConnectTimeout=10`.
-- **Key-based SSH auth** to every managed host — virtweb is
-  non-interactive, so interactive password auth is not supported.
+  Default ssh options: `StrictHostKeyChecking=accept-new`,
+  `ConnectTimeout=10`; `BatchMode=yes` unless the server has a
+  password.
+- **Credentials per server** — paste the server's SSH private key
+  and/or set its password in the UI. They are stored with the server
+  record (see below) and need nothing else on the virtweb host, which
+  is why virtweb is happy to run in a container with only a data-dir
+  volume. `sshpass` is only needed if any server uses password auth.
 - The remote host must have `virsh` on its PATH (i.e. libvirt installed).
 
 ## Setup and configuration
@@ -120,30 +125,33 @@ stopped.
    - **uri** — the libvirt URI. Use **`qemu:///system`** (the default) so
      virtweb talks to the *system* libvirt instance, where VMs live.
      (`qemu:///session` is the per-user session and is usually empty.)
-   - **ssh key path** *(optional)* — a private key on the virtweb host
-     to use for this server. When set, only that key is offered: the
-     local ssh agent and the `~/.ssh` identity defaults are excluded.
+   - **SSH private key** *(optional)* — paste the key itself (OpenSSH
+     or PKCS#8 PEM). It is stored with the server record in
+     `servers.json` (file mode 0600); on each connection virtweb writes
+     it to a 0600 temp file, offers it to ssh via `-i
+     IdentitiesOnly=yes` (the virtweb host's own ssh agent and
+     identities are excluded), and deletes the temp file afterwards.
    - **ssh password** *(optional)* — SSH password for this server.
-     Requires `sshpass` installed on the virtweb host; the password is
-     stored in plaintext in `servers.json` (file mode 0600) and is
-     handed to ssh through a 0600 temp file (never the process list).
-3. **SSH access** must work from the virtweb host as that user — with
-   no explicit credentials that means your usual agent/config
-   (non-interactive); with a key path or password set, virtweb uses
-   exactly those. E.g. `ssh -p <port> <user>@<host> virsh -c
-   qemu:///system list` works non-interactively. virtweb uses your
-   existing key and known_hosts behaviour (new host keys are accepted
-   automatically via `accept-new`).
-   e.g. `ssh -p <port> <user>@<host> virsh -c qemu:///system list` works
-   non-interactively. virtweb uses your existing key and known_hosts
-   behaviour (new host keys are accepted automatically via
-   `accept-new`).
+     Requires `sshpass` where virtweb runs; stored in `servers.json`
+     (0600) and handed to ssh through a 0600 temp file (never the
+     process list). Key and password can be combined (key first,
+     password as fallback).
+3. **SSH access** must work as that user with the stored credentials:
+   virtweb offers exactly the stored key (alone) and/or password for
+   each server. Verify by hand that
+   `ssh -p <port> <user>@<host> virsh -c qemu:///system list` works.
+   New host keys are accepted automatically (`accept-new`). If no
+   credentials are stored for a server, none are offered — that server
+   is only reachable if the virtweb host's own ssh setup (agent,
+   `~/.ssh/config`, default identities) gets it there.
 
 The server list, its persisted `servers.json` (mode 0600), and each
 server's shape (`name`, `user`, `host`, `port`, `uri`, and optionally
-`identityFile`, `password`) are what virtweb keeps — nothing else is
-stored. A server you can't reach simply shows an error on its page
-until the SSH access is fixed.
+`key`, `password`) are what virtweb keeps — nothing else is stored.
+`servers.json` holds the credentials, so keep the data dir private;
+the API never returns the key material (only a `keySet` flag). A
+server you can't reach simply shows an error on its page until the
+SSH access is fixed.
 
 ## Managing VMs
 
@@ -217,6 +225,26 @@ authenticated user point the remote SSH user at an arbitrary TCP service
 All three use the same plain-HTTP duplex transport — see
 [TRANSPORT.md](TRANSPORT.md) and `web/static/duplex.js` for the design
 notes (ordering, h2, teardown).
+
+## Running in a container
+
+The intended production shape is: virtweb in a container, behind the
+mTLS reverse proxy (see SECURITY.md). Per-server credentials are
+stored in the data dir rather than on the host, so the container only
+needs a **data-dir volume** — no key files to mount.
+
+```sh
+make dist                      # builds dist/virtweb
+docker build -t virtweb .      # alpine + openssh-client + sshpass + dist/virtweb-linux-amd64
+docker run -d --name virtweb \
+  -v $(pwd)/virtweb-data:/home/virtweb/.virtweb \
+  virtweb -addr 0.0.0.0:8080
+```
+
+Flags for the proxy deployment: `-tls -tls-cert -tls-key -client-ca`
+(TLS/mTLS at virtweb), `-proxy-protocol -proxy-from <cidr>` (PROXY
+header from an L4 pass-through router). `sshpass` in the image covers
+password auth; key auth needs nothing extra.
 
 ## Offline demo mode (`-backend stub`)
 

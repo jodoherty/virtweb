@@ -18,6 +18,8 @@ import (
 
 // testWeb is a minimal embedded web/ tree for tests (same layout as the
 // real one, stripped-down content).
+const testKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----"
+
 var testWeb = fstest.MapFS{
 	"templates/layout.html": &fstest.MapFile{Data: []byte(
 		`{{define "layout"}}<html><body>{{if .Err}}<div class="banner error">{{.Err}}</div>{{end}}` +
@@ -38,7 +40,8 @@ var testWeb = fstest.MapFS{
 	"templates/servers.html": &fstest.MapFile{Data: []byte(
 		`{{define "servers"}}<ul class="server-list">{{range .Servers}}<li>{{.Name}} ` +
 			`<a href="/servers/{{.ID}}">open</a></li>{{end}}</ul>` +
-			`<form method="post" action="/servers"></form>{{end}}`)},
+			`<form method="post" action="/servers"><textarea name="key"></textarea>` +
+			`<input name="password" type="password"></form>{{end}}`)},
 	"templates/server.html": &fstest.MapFile{Data: []byte(
 		`{{define "server"}}<h1>{{.Server.Name}}</h1>{{range .VMs}}<div class="vm">{{.Name}} ` +
 			`{{.State}}` +
@@ -177,7 +180,7 @@ func TestAddServerForm(t *testing.T) {
 	form.Set("user", "u")
 	form.Set("host", "h2")
 	form.Set("port", "2222")
-	form.Set("identityFile", "/tmp/keys/host2.pem")
+	form.Set("key", testKey)
 	form.Set("password", "s3cret")
 	w := doForm(t, ui.Routes(), "/servers", form)
 	if w.Code != http.StatusSeeOther {
@@ -190,7 +193,7 @@ func TestAddServerForm(t *testing.T) {
 	id := strings.TrimPrefix(loc, "/servers/")
 	srv, err := st.Get(id)
 	if err != nil || srv.Name != "newhost" || srv.Port != 2222 ||
-		srv.IdentityFile != "/tmp/keys/host2.pem" || srv.Password != "s3cret" {
+		srv.Key != testKey || srv.Password != "s3cret" {
 		t.Fatalf("stored server %+v (err %v)", srv, err)
 	}
 }
@@ -215,14 +218,14 @@ func TestUpdateServerForm(t *testing.T) {
 	form.Set("host", "h2")
 	form.Set("port", "2222")
 	form.Set("uri", "qemu:///system")
-	form.Set("identityFile", "/tmp/keys/host2.pem")
+	form.Set("key", testKey)
 	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("got %d, want 303: %s", w.Code, body(w))
 	}
 	got, err := st.Get(srv.ID) // id must be preserved
 	if err != nil || got.Name != "renamed" || got.Host != "h2" || got.Port != 2222 ||
-		got.IdentityFile != "/tmp/keys/host2.pem" {
+		got.Key != testKey {
 		t.Fatalf("stored server %+v (err %v)", got, err)
 	}
 
@@ -236,8 +239,47 @@ func TestUpdateServerForm(t *testing.T) {
 		t.Fatalf("got %d, want 303", w.Code)
 	}
 	got, err = st.Get(srv.ID)
-	if err != nil || got.IdentityFile != "" {
+	if err != nil || got.Key != "" || got.Password != "" {
 		t.Fatalf("credential not cleared: %+v (err %v)", got, err)
+	}
+
+	// removeKey drops the stored key without a replacement.
+	form3 := url.Values{}
+	form3.Set("name", "renamed")
+	form3.Set("user", "u2")
+	form3.Set("host", "h2")
+	form3.Set("key", testKey)
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form3)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("re-store key got %d, want 303", w.Code)
+	}
+	got, err = st.Get(srv.ID)
+	if err != nil || got.Key != testKey {
+		t.Fatalf("key not re-stored: %+v (err %v)", got, err)
+	}
+	form4 := url.Values{}
+	form4.Set("name", "renamed")
+	form4.Set("user", "u2")
+	form4.Set("host", "h2")
+	form4.Set("removeKey", "1")
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form4)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("remove key got %d, want 303", w.Code)
+	}
+	got, err = st.Get(srv.ID)
+	if err != nil || got.Key != "" {
+		t.Fatalf("key not removed: %+v (err %v)", got, err)
+	}
+
+	// a key that is not a PEM block is rejected.
+	bad := url.Values{}
+	bad.Set("name", "renamed")
+	bad.Set("user", "u2")
+	bad.Set("host", "h2")
+	bad.Set("key", "not-a-key")
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", bad)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("bad key got %d, want 400", w.Code)
 	}
 
 	// invalid (missing host) -> 400.

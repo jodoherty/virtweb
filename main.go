@@ -271,7 +271,7 @@ func (f *backendFactory) NewBackend(srv virt.Server) virt.Backend {
 	// each backend execs ssh with that server's key/password only.
 	run := &sshexec.Std{
 		StrictHostKeyChecking: f.ssh.StrictHostKeyChecking,
-		Identity:              srv.IdentityFile,
+		Key:                   srv.Key,
 		Password:              srv.Password,
 	}
 	return virsh.New(srv, run)

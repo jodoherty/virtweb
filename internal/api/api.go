@@ -111,8 +111,27 @@ func (a *API) Routes() http.Handler {
 
 /* ---------- handlers ---------- */
 
+// serverView is the JSON shape of a server for responses: the private
+// key material is never returned (the UI needs to know only that one
+// is stored); the password is returned as-is so the edit form can
+// pre-fill (the deployment model assumes a trusted, mTLS path).
+type serverView struct {
+	virt.Server
+	KeySet bool `json:"keySet"`
+}
+
+func toServerView(srv virt.Server) serverView {
+	keySet := srv.Key != ""
+	srv.Key = ""
+	return serverView{srv, keySet}
+}
+
 func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.st.List())
+	views := make([]serverView, 0, len(a.st.List()))
+	for _, srv := range a.st.List() {
+		views = append(views, toServerView(srv))
+	}
+	writeJSON(w, http.StatusOK, views)
 }
 
 func (a *API) handleAddServer(w http.ResponseWriter, r *http.Request) {
@@ -124,12 +143,16 @@ func (a *API) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
+	if err := store.KeySyntaxError(srv.Key); err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	created, err := a.st.Add(srv)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(w, http.StatusCreated, toServerView(created))
 }
 
 func (a *API) handleGetServer(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +161,7 @@ func (a *API) handleGetServer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "%v", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, srv)
+	writeJSON(w, http.StatusOK, toServerView(srv))
 }
 
 func (a *API) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +169,10 @@ func (a *API) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	var srv virt.Server
 	if err := json.NewDecoder(r.Body).Decode(&srv); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if err := store.KeySyntaxError(srv.Key); err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
 		return
 	}
 	updated, err := a.st.Update(r.PathValue("id"), srv)
@@ -162,7 +189,7 @@ func (a *API) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	delete(a.backends, updated.ID)
 	a.mu.Unlock()
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, toServerView(updated))
 }
 
 func (a *API) handleRemoveServer(w http.ResponseWriter, r *http.Request) {

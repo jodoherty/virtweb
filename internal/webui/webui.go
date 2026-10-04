@@ -138,12 +138,12 @@ func (u *UI) handleAddServer(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.Form
 	srv := virt.Server{
-		Name:         strings.TrimSpace(f.Get("name")),
-		User:         strings.TrimSpace(f.Get("user")),
-		Host:         strings.TrimSpace(f.Get("host")),
-		URI:          f.Get("uri"),
-		IdentityFile: strings.TrimSpace(f.Get("identityFile")),
-		Password:     strings.TrimSpace(f.Get("password")),
+		Name:     strings.TrimSpace(f.Get("name")),
+		User:     strings.TrimSpace(f.Get("user")),
+		Host:     strings.TrimSpace(f.Get("host")),
+		URI:      f.Get("uri"),
+		Key:      strings.TrimSpace(f.Get("key")),
+		Password: strings.TrimSpace(f.Get("password")),
 	}
 	if p := strings.TrimSpace(f.Get("port")); p != "" {
 		n, err := strconv.Atoi(p)
@@ -155,6 +155,10 @@ func (u *UI) handleAddServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if srv.Name == "" || srv.User == "" || srv.Host == "" {
 		http.Error(w, "name, user and host are required", http.StatusBadRequest)
+		return
+	}
+	if err := store.KeySyntaxError(srv.Key); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if srv.URI == "" {
@@ -175,12 +179,15 @@ func (u *UI) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.Form
 	srv := virt.Server{
-		Name:         strings.TrimSpace(f.Get("name")),
-		User:         strings.TrimSpace(f.Get("user")),
-		Host:         strings.TrimSpace(f.Get("host")),
-		URI:          f.Get("uri"),
-		IdentityFile: strings.TrimSpace(f.Get("identityFile")),
-		Password:     strings.TrimSpace(f.Get("password")),
+		Name:     strings.TrimSpace(f.Get("name")),
+		User:     strings.TrimSpace(f.Get("user")),
+		Host:     strings.TrimSpace(f.Get("host")),
+		URI:      f.Get("uri"),
+		Key:      strings.TrimSpace(f.Get("key")),
+		Password: strings.TrimSpace(f.Get("password")),
+	}
+	if f.Get("removeKey") != "" {
+		srv.Key = ""
 	}
 	if p := strings.TrimSpace(f.Get("port")); p != "" {
 		n, err := strconv.Atoi(p)
@@ -192,6 +199,10 @@ func (u *UI) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if srv.Name == "" || srv.User == "" || srv.Host == "" {
 		http.Error(w, "name, user and host are required", http.StatusBadRequest)
+		return
+	}
+	if err := store.KeySyntaxError(srv.Key); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if srv.URI == "" {

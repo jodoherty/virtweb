@@ -180,19 +180,24 @@ func newTestAPI(t *testing.T) (*httptest.Server, *fakeFactory, *store.Store) {
 func TestServerCRUD(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 
+	const alphaKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nalpha\n-----END OPENSSH PRIVATE KEY-----\n"
 	res, err := http.Post(ts.URL+"/api/servers", "application/json",
 		jsonBody(virt.Server{Name: "alpha", User: "u", Host: "h",
-			IdentityFile: "/tmp/keys/alpha.pem", Password: "pw1"}))
+			Key: alphaKey, Password: "pw1"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("add status = %d", res.StatusCode)
 	}
-	var created virt.Server
+	// the response never carries the key material, only keySet.
+	var created struct {
+		virt.Server
+		KeySet bool `json:"keySet"`
+	}
 	json.NewDecoder(res.Body).Decode(&created)
 	if created.ID == "" || created.Name != "alpha" ||
-		created.IdentityFile != "/tmp/keys/alpha.pem" || created.Password != "pw1" {
+		created.Key != "" || !created.KeySet || created.Password != "pw1" {
 		t.Fatalf("created = %+v", created)
 	}
 

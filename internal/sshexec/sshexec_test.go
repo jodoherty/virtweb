@@ -192,9 +192,15 @@ exec "` + sshPath + `" "$@"
 	return script
 }
 
-func TestStdIdentityKey(t *testing.T) {
+// testKey is a throwaway PEM block for the temp-file assertions.
+const testKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key-material\n-----END OPENSSH PRIVATE KEY-----\n"
+
+func TestStdKeyMaterial(t *testing.T) {
+	// The stored key material is written to a 0600 temp file and passed
+	// via -i; the temp file is removed after the call; IdentitiesOnly
+	// and BatchMode accompany key-only auth.
 	argsFile := filepath.Join(t.TempDir(), "args")
-	ssh := &Std{SSHPath: fakeSSH(t, argsFile), Identity: "/tmp/keys/host.pem"}
+	ssh := &Std{SSHPath: fakeSSH(t, argsFile), Key: testKey}
 
 	out, err := ssh.Run(context.Background(), "bob", "example.com", 0, "echo hi")
 	if err != nil {
@@ -205,35 +211,57 @@ func TestStdIdentityKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := string(args)
-	for _, want := range []string{"-i", "/tmp/keys/host.pem", "-o", "IdentitiesOnly=yes", "BatchMode=yes"} {
-		if !strings.Contains(a, want) {
-			t.Fatalf("ssh args missing %q:\n%s", want, a)
+	if !strings.Contains(a, "-i") || !strings.Contains(a, "IdentitiesOnly=yes") ||
+		!strings.Contains(a, "BatchMode=yes") {
+		t.Fatalf("ssh args missing expected options:\n%s", a)
+	}
+	// find the temp file after -i; it must be gone now
+	lines := strings.Split(strings.TrimSpace(a), "\n")
+	var keyFile string
+	for i, l := range lines {
+		if l == "-i" && i+1 < len(lines) {
+			keyFile = lines[i+1]
 		}
+	}
+	if keyFile == "" {
+		t.Fatalf("no -i argument:\n%s", a)
+	}
+	if _, err := os.Stat(keyFile); !os.IsNotExist(err) {
+		t.Fatalf("key temp file %q not cleaned up (stat err %v)", keyFile, err)
 	}
 	if !strings.Contains(out, "echo hi") {
 		t.Fatalf("command missing: %q", out)
 	}
 }
 
-func TestStdIdentityDisablesAgent(t *testing.T) {
-	// IdentitiesOnly=yes must be passed as an -o option so the agent is
-	// never consulted, and BatchMode stays on for key-only auth.
-	argsFile := filepath.Join(t.TempDir(), "args")
-	ssh := &Std{SSHPath: fakeSSH(t, argsFile), Identity: "/tmp/k"}
+func TestStdKeyFileHoldsKeyMaterial(t *testing.T) {
+	// A fake ssh that records the -i file's content while it still
+	// exists (before cleanup runs).
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	keyDump := filepath.Join(dir, "keydump")
+	script := filepath.Join(dir, "fake-ssh-keycheck")
+	// The -i value is the only argv entry that names an existing
+	// file; dump it while it still exists (cleanup runs after ssh
+	// exits).
+	os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\n' "$@" > "` + argsFile + `"
+for f in "$@"; do
+  if [ -f "$f" ]; then cat "$f" > "` + keyDump + `"; break; fi
+done
+echo done
+`), 0o755)
+
+	ssh := &Std{SSHPath: script, Key: testKey}
 	if _, err := ssh.Run(context.Background(), "bob", "h", 0, "true"); err != nil {
 		t.Fatal(err)
 	}
-	args, _ := os.ReadFile(argsFile)
-	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	// the -o IdentitiesOnly=yes pair must be present
-	found := false
-	for i, l := range lines {
-		if l == "IdentitiesOnly=yes" && i > 0 && lines[i-1] == "-o" {
-			found = true
-		}
+	dump, err := os.ReadFile(keyDump)
+	if err != nil {
+		t.Fatalf("key dump not written: %v", err)
 	}
-	if !found {
-		t.Fatalf("IdentitiesOnly=yes option missing:\n%s", string(args))
+	if string(dump) != testKey {
+		t.Fatalf("key temp file content = %q, want the key material", string(dump))
 	}
 }
 

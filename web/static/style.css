@@ -210,3 +210,11 @@ td.actions > * { margin-right: 0.3rem; }
   font-size: 0.8rem;
 }
 #copy-xml:hover { border-color: var(--accent); color: var(--accent); }
+
+.keybox {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+  font-size: 12px;
+  margin: 0.5em 0;
+}
