@@ -130,7 +130,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		mux.Handle(prefix, http.StripPrefix(prefix, http.FileServerFS(sub)))
+		mux.Handle(prefix, webui.NoCacheFS(sub, prefix))
 	}
 
 	// Cross-origin protection (CSRF): non-safe (POST/DELETE/PUT/...) 

@@ -503,3 +503,44 @@ func TestUnknownServer404(t *testing.T) {
 		t.Fatalf("got %d", w.Code)
 	}
 }
+
+// TestStaticNoCache: embedded static assets must revalidate on every
+// load (Cache-Control: no-cache). Without it, a browser heuristically
+// caches the script bytes, and a page keeps running on a stale
+// (pre-fix) copy of a vendored library until a hard reload.
+// Revalidation must stay cheap (ETag -> 304).
+func TestStaticNoCache(t *testing.T) {
+	webfs := fstest.MapFS{
+		"static/hello.js": &fstest.MapFile{Data: []byte("window.hello = 1;")},
+	}
+	h := Static(webfs)
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/static/hello.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", res.Header.Get("Cache-Control"))
+	}
+	if string(body) != "window.hello = 1;" {
+		t.Fatalf("body = %q", body)
+	}
+	etag := res.Header.Get("Etag")
+	if etag == "" {
+		t.Fatal("no ETag; revalidation would always re-send the body")
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/static/hello.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	res2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2.Body.Close()
+	if res2.StatusCode != http.StatusNotModified {
+		t.Fatalf("revalidation status = %d, want 304", res2.StatusCode)
+	}
+}

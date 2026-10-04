@@ -9,6 +9,9 @@
 package webui
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"io"
 	"context"
 	"encoding/json"
 	"html/template"
@@ -79,7 +82,86 @@ func Static(web fs.FS) http.Handler {
 	if err != nil {
 		return http.NotFoundHandler()
 	}
-	return http.StripPrefix("/static/", http.FileServerFS(sub))
+	return NoCacheFS(sub, "/static/")
+}
+
+// etagCache maps a file path to the ETag of its content, computed
+// lazily and cached for the process lifetime (the embedded FS is
+// immutable).
+type etagCache struct {
+	mu    sync.Mutex
+	etags map[string]string
+}
+
+func (c *etagCache) forFile(fsys fs.FS, path string) string {
+	c.mu.Lock()
+	if e, ok := c.etags[path]; ok {
+		c.mu.Unlock()
+		return e
+	}
+	c.mu.Unlock()
+	f, err := fsys.Open(path)
+	if err != nil {
+		return ""
+	}
+	b, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	e := fmt.Sprintf("\"%x-%d\"", sum, len(b))
+	c.mu.Lock()
+	c.etags[path] = e
+	c.mu.Unlock()
+	return e
+}
+
+// NoCacheFS serves fsys (URL paths prefixed with prefix) with
+// Cache-Control: no-cache plus a content ETag, answering
+// If-None-Match with 304. The embedded assets change when the binary
+// changes, and without an explicit Cache-Control a browser will
+// heuristically keep serving old script bytes — so a page keeps
+// running on a stale (pre-fix) copy of a vendored library until a
+// hard reload. http.FileServer itself sends no ETag and the embedded
+// files carry a zero ModTime, so revalidation is done here; a 304
+// revalidation costs nothing on the wire.
+func NoCacheFS(fsys fs.FS, prefix string) http.Handler {
+	etags := &etagCache{etags: map[string]string{}}
+	fileSrv := http.FileServerFS(fsys)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		path := strings.TrimPrefix(r.URL.Path, prefix)
+		if etag := etags.forFile(fsys, path); etag != "" {
+			w.Header().Set("Etag", etag)
+			if etagMatch(etag, r.Header.Get("If-None-Match")) {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+		// Serve with the prefix stripped: FileServerFS resolves against
+		// the fs root. (Note: Go's file-server error path strips the
+		// Cache-Control/Etag headers from error responses by design, so
+		// a 404 for a missing asset carries neither.)
+		if path != r.URL.Path {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = path
+			fileSrv.ServeHTTP(w, r2)
+			return
+		}
+		fileSrv.ServeHTTP(w, r)
+	})
+}
+
+// etagMatch reports whether the response ETag is listed in the
+// If-None-Match header (comma-separated etags, with a * wildcard).
+func etagMatch(etag, inoNoneMatch string) bool {
+	for _, cand := range strings.Split(inoNoneMatch, ",") {
+		if strings.TrimSpace(cand) == "*" || strings.TrimSpace(cand) == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // page is the render context for every template.
