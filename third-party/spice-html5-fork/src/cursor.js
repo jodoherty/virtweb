@@ -64,6 +64,12 @@ SpiceCursorConn.prototype.cursor_note = function(event, cursor)
         rec.typeName = CURSOR_TYPE_NAMES[cursor.header.type] ||
                        ("unknown(" + cursor.header.type + ")");
         rec.hot = [cursor.header.hot_spot_x, cursor.header.hot_spot_y];
+        if (cursor.data)
+            rec.dataLen = cursor.data.byteLength !== undefined ?
+                cursor.data.byteLength : cursor.data.length;
+        rec.flags = cursor.flags;
+        if (cursor.flags & Constants.SPICE_CURSOR_FLAGS_FROM_CACHE)
+            rec.fromCache = true;
     }
     if (this.parent)
     {
@@ -73,6 +79,45 @@ SpiceCursorConn.prototype.cursor_note = function(event, cursor)
         dbg.last = rec;
     }
     return rec;
+};
+
+/* virtweb delta: client-side cursor shape cache
+   (SPICE_CURSOR_FLAGS_CACHE_ME / FROM_CACHE). The spice-server sends
+   a full shape with CACHE_ME when a cursor first appears, and from
+   then on re-selecting that cursor sends a FROM_CACHE SET carrying
+   only the header — no pixel data — with the client expected to keep
+   the shape in a cache keyed by header.unique (protocol: the unique
+   id is "used for storing and retrieving cursors from the cursor
+   cache"). Upstream keeps no cache: every FROM_CACHE arrives with
+   zero pixels, the conversion fails, and the previously rendered
+   shape stays on screen. That is exactly why the guest's default
+   arrow — which the server always re-sends as a reference, never as
+   pixels — never came back once a special cursor had been shown. */
+SpiceCursorConn.prototype.cache_shape = function(cursor)
+{
+    if (cursor && cursor.header && cursor.data &&
+        cursor.flags & Constants.SPICE_CURSOR_FLAGS_CACHE_ME)
+    {
+        this.cursor_shapes = this.cursor_shapes || {};
+        this.cursor_shapes[String(cursor.header.unique)] = cursor;
+    }
+};
+
+SpiceCursorConn.prototype.lookup_shape = function(header)
+{
+    var entry = this.cursor_shapes &&
+        this.cursor_shapes[String(header && header.unique)];
+    return (entry && entry.data) ? entry : null;
+};
+
+SpiceCursorConn.prototype.drop_shapes = function(unique)
+{
+    if (! this.cursor_shapes)
+        return;
+    if (unique !== undefined && unique !== null)
+        delete this.cursor_shapes[String(unique)];
+    else
+        this.cursor_shapes = {};
 };
 
 SpiceCursorConn.prototype.process_channel_message = function(msg)
@@ -139,6 +184,21 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
            false here made the base class log a second, misleading
            "Unknown message type 103" for every one of these. */
         var rec = this.cursor_note("SET", cursor_set.cursor);
+        /* virtweb delta: restore a cached shape (header only, no
+           pixel data) — see cache_shape above. */
+        if (cursor_set.cursor.flags & Constants.SPICE_CURSOR_FLAGS_FROM_CACHE)
+        {
+            var cached = this.lookup_shape(cursor_set.cursor.header);
+            if (cached)
+            {
+                this.set_cursor(cached);
+                return true;
+            }
+            this.log_warn("cursor: FROM_CACHE reference to unknown shape " +
+                          cursor_set.cursor.header.unique +
+                          "; keeping the last shape.");
+            return true;
+        }
         if (cursor_set.cursor.flags == 0 &&
             (! this.lastSetLogged ||
              this.lastSetLogged.w != rec.w || this.lastSetLogged.h != rec.h ||
@@ -193,6 +253,7 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
     {
         DEBUG > 1 && console.log("SpiceMsgCursorReset");
         this.cursor_note("RESET", null);
+        this.drop_shapes();
         this.log_info("cursor: RESET (shape cache cleared)");
         document.getElementById(this.parent.screen_id).style.cursor = "auto";
         return true;
@@ -200,14 +261,14 @@ SpiceCursorConn.prototype.process_channel_message = function(msg)
 
     if (msg.type == Constants.SPICE_MSG_CURSOR_INVAL_ONE)
     {
-        this.known_unimplemented(msg.type, "Cursor Inval One");
+        /* virtweb delta: drop one cached shape (u64 unique payload). */
+        this.drop_shapes(new DataView(msg.data).getBigUint64(0, true));
         return true;
     }
 
     if (msg.type == Constants.SPICE_MSG_CURSOR_INVAL_ALL)
     {
-        DEBUG > 1 && console.log("SpiceMsgCursorInvalAll");
-        // FIXME - There may be something useful to do here...
+        this.drop_shapes();
         return true;
     }
 
@@ -346,6 +407,7 @@ SpiceCursorConn.prototype.set_cursor = function(cursor)
                             cursor.header.type + ")");
         return false;
     }
+    this.cache_shape(cursor);
 
     var pngstr = create_rgba_png(cursor.header.width, cursor.header.height, rgba);
     var curstr = 'url(data:image/png,' + pngstr + ') ' +
