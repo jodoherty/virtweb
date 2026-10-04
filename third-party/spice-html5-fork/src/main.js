@@ -156,6 +156,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
            we request (see handle_mouse_mode), so record it before the
            first mode decision. */
         this.agent_connected = this.main_init.agent_connected;
+        this.mouse_mode_supported = this.main_init.supported_mouse_modes;
 
         this.handle_mouse_mode(this.main_init.current_mouse_mode,
                                this.main_init.supported_mouse_modes);
@@ -174,6 +175,7 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
     {
         var mode = new Messages.SpiceMsgMainMouseMode(msg.data);
         DEBUG > 0 && this.log_info("Mouse supported modes " + mode.supported_modes + "; current " + mode.current_mode);
+        this.mouse_mode_supported = mode.supported_modes;
         this.handle_mouse_mode(mode.current_mode, mode.supported_modes);
         return true;
     }
@@ -282,6 +284,18 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_MAIN_AGENT_DISCONNECTED)
     {
         this.agent_connected = false;
+
+        /* virtweb delta: the server only re-negotiates the mouse mode
+           when its ALLOWED state changes, and the tablet clause
+           (QEMU cursor=auto) often keeps client mode allowed even
+           with the agent gone; in client mode without the agent the
+           server routes button presses to the tablet wheel (or drops
+           them), so clicks die silently — exactly the post-reboot
+           window where the guest's vdagent is not (re)connected yet.
+           Re-evaluate immediately instead of waiting for a push. */
+        if (this.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT)
+            this.handle_mouse_mode(this.mouse_mode,
+                                   this.mouse_mode_supported);
 
         /* Fail transfers in flight rather than strand them: with the
            agent gone their chunks are silently dropped, so they would
@@ -673,6 +687,14 @@ SpiceMainConn.prototype.send_clipboard_grab = function()
 SpiceMainConn.prototype.connect_agent = function()
 {
     this.agent_connected = true;
+
+    /* virtweb delta: mirror of the disconnect-time re-evaluation —
+       the server does not push a mode change just because the agent
+       came back (allowed state unchanged), so request client mode
+       ourselves now that positions are applied by the agent. */
+    if (this.mouse_mode == Constants.SPICE_MOUSE_MODE_SERVER)
+        this.handle_mouse_mode(this.mouse_mode,
+                               this.mouse_mode_supported);
 
     var agent_start = new Messages.SpiceMsgcMainAgentStart(~0);
     var mr = new Messages.SpiceMiniData();
