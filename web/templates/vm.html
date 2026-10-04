@@ -19,9 +19,11 @@
         data-confirm="Destroy {{.VM.Name}} now? This kills the VM (forced power-off) without a graceful shutdown."><button class="danger">Destroy</button></form>
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/reboot"
         data-confirm="Reboot {{.VM.Name}}? This interrupts the VM."><button>Reboot</button></form>
+  {{if .VM.Running}}
   <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/console">Console</a>
-  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>
-  <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/spice">SPICE</a>
+  {{if .VM.VNCPort}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>{{end}}
+  {{if .VM.SpiceAddr}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/spice">SPICE</a>{{end}}
+  {{end}}
 </p>
 <h3>Domain XML <button type="button" id="copy-xml" class="muted">Copy</button></h3>
 {{if .XML}}

@@ -34,7 +34,9 @@ var testWeb = fstest.MapFS{
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/shutdown" data-confirm="Shut down?"></form>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/destroy" data-confirm="Destroy now?"></form>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/reboot" data-confirm="Reboot?"></form>` +
-			`<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
+			`{{if .VM.Running}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
+			`{{if .VM.VNCPort}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/vnc">vnc</a>{{end}}` +
+			`{{if .VM.SpiceAddr}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/spice">spice</a>{{end}}{{end}}` +
 			`<pre id="vm-xml">{{.XML}}</pre>` +
 			`<script id="vm-cfg" type="application/json">{{.CfgJSON}}</script>{{end}}`)},
 	"templates/servers.html": &fstest.MapFile{Data: []byte(
@@ -46,7 +48,7 @@ var testWeb = fstest.MapFS{
 		`{{define "server"}}<h1>{{.Server.Name}}</h1>{{range .VMs}}<div class="vm">{{.Name}} ` +
 			`{{.State}}` +
 			`<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}">{{.Name}}</a>` +
-			`<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">console</a></div>{{end}}` +
+			`{{if .Running}}<a href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">console</a>{{end}}</div>{{end}}` +
 			`{{if not .VMs}}<p class="muted">no vms</p>{{end}}{{end}}`)},
 	"templates/console.html": &fstest.MapFile{Data: []byte(
 		`{{define "console"}}{{if not .Running}}<div class="banner warn">shut off</div>{{else}}` +
@@ -123,8 +125,8 @@ func newTestUI(t *testing.T) (*UI, *store.Store) {
 		t.Fatal(err)
 	}
 	fb := &fakeBackend{vms: []virt.VM{
-		{Name: "debian-dev", State: "running", Running: true, IP: "10.0.2.15"},
-		{Name: "win10", State: "shut off"},
+		{Name: "debian-dev", State: "running", Running: true, IP: "10.0.2.15", SpiceAddr: "stub:5991"},
+		{Name: "win10", State: "shut off", VNCPort: 5901},
 	}}
 	ui, err := New(st, factory{fb}, testWeb)
 	if err != nil {

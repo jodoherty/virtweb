@@ -137,7 +137,12 @@ test('edit server form updates the definition in place', async ({ page }) => {
 });
 
 test('VM detail page shows live info and the domain XML', async ({ page }) => {
-  // Arrive via the name link on the server page.
+  // debian-dev is a SPICE-only domain; get it running so the display
+  // links are offered.
+  await api.action(serverId, 'debian-dev', 'destroy').catch(() => {});
+  await api.action(serverId, 'debian-dev', 'start');
+  await waitFor(async () =>
+    (await api.listVMs(serverId)).find((v) => v.name === 'debian-dev')?.state === 'running');
   await page.goto(`${url()}/servers/${serverId}`);
   await page.locator('.vm-table a', { hasText: 'debian-dev' }).click();
   await expect(page.locator('h2')).toHaveText('debian-dev');
@@ -161,7 +166,12 @@ test('VM detail page shows live info and the domain XML', async ({ page }) => {
       'data-confirm', /.+/);
   }
   await expect(page.locator('form[action$="/start"]')).not.toHaveAttribute('data-confirm');
+  // Display links match the domain's graphics: debian-dev is SPICE —
+  // console + SPICE are offered, VNC is not (and never all three at
+  // once).
   await expect(page.locator('a[href$="/console"]')).toBeVisible();
+  await expect(page.locator('a[href$="/spice"]')).toBeVisible();
+  await expect(page.locator('a[href$="/vnc"]')).toHaveCount(0);
 
   // The Refresh link re-renders the same page.
   await page.locator('a.btn[href$="/vms/debian-dev"]').click();
@@ -261,16 +271,34 @@ test('Start on the detail page takes the VM to running', async ({ page }) => {
     .toContain('running');
 });
 
-test('the VM listing has no actions, only state and display links', async ({ page }) => {
+test('the VM listing shows state and only the applicable display links', async ({ page }) => {
+  // debian-dev: SPICE-only domain, running. win10: VNC-only, shut off.
+  await api.action(serverId, 'debian-dev', 'destroy').catch(() => {});
+  await api.action(serverId, 'debian-dev', 'start');
+  await api.action(serverId, 'win10', 'destroy').catch(() => {});
+  await waitFor(async () => {
+    const vms = await api.listVMs(serverId);
+    return vms.find((v) => v.name === 'debian-dev')?.state === 'running'
+      && vms.find((v) => v.name === 'win10')?.state === 'shut off';
+  });
   await page.goto(`${url()}/servers/${serverId}`);
-  const row = page.locator('.vm-table tr', { hasText: 'debian-dev' });
-  await expect(row.locator('form')).toHaveCount(0);
-  await expect(row.locator('button')).toHaveCount(0);
-  // state + details link + display links remain (state value
-  // depends on other specs; any known libvirt state is fine)
-  await expect(row).toHaveText(/(running|shut off|starting)/);
-  await expect(row.locator('a[href$="/vms/debian-dev"]')).toBeVisible();
-  await expect(row.locator('a[href$="/console"]')).toBeVisible();
+
+  // no action controls anywhere in the table
+  await expect(page.locator('.vm-table form')).toHaveCount(0);
+  await expect(page.locator('.vm-table button')).toHaveCount(0);
+
+  const running = page.locator('.vm-table tr', { hasText: 'debian-dev' });
+  await expect(running).toContainText('running');
+  // SPICE domain while running: console + SPICE, no VNC
+  await expect(running.locator('a[href$="/console"]')).toBeVisible();
+  await expect(running.locator('a[href$="/spice"]')).toBeVisible();
+  await expect(running.locator('a[href$="/vnc"]')).toHaveCount(0);
+  await expect(running.locator('a[href$="/vms/debian-dev"]')).toBeVisible();
+
+  // shut off: no display links at all
+  const off = page.locator('.vm-table tr', { hasText: 'win10' });
+  await expect(off).toContainText('shut off');
+  await expect(off.locator('a[href*="/console"], a[href*="/vnc"], a[href*="/spice"]')).toHaveCount(0);
 });
 
 test('console page: type a command, read the reply', async ({ page }) => {

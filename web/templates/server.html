@@ -33,9 +33,11 @@
     <td>{{if .Memory}}{{.Memory}} MiB{{else}}–{{end}}</td>
     <td>{{if .IP}}{{.IP}}{{else}}–{{end}}</td>
     <td class="actions">
+      {{if .Running}}
       <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/console">Console</a>
-      <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/vnc">VNC</a>
-      <a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/spice">SPICE</a>
+      {{if .VNCPort}}<a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/vnc">VNC</a>{{end}}
+      {{if .SpiceAddr}}<a class="btn" href="/servers/{{$.Server.ID}}/vms/{{q .Name}}/spice">SPICE</a>{{end}}
+      {{end}}
     </td>
   </tr>
   {{end}}

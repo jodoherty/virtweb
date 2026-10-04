@@ -101,7 +101,7 @@ type VMSpec struct {
 // defaultVMs is the deterministic fake host's table.
 var defaultVMs = []VMSpec{
 	{Name: "debian-dev", VCPUs: 2, MemoryMiB: 4096, IP: "192.168.100.50", SpiceAddr: "127.0.0.1:5991"},
-	{Name: "win10", VCPUs: 4, MemoryMiB: 8192, IP: "192.168.168.51", VNCPort: 5901, SpiceAddr: "127.0.0.1:5992"},
+	{Name: "win10", VCPUs: 4, MemoryMiB: 8192, IP: "192.168.168.51", VNCPort: 5901},
 	// The "console drip": its serial console emits one line every
 	// dripInterval for a few seconds after the banner. Deterministic
 	// incremental output for the reverse-proxy arrival specs
