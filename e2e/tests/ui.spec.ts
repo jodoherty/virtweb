@@ -363,7 +363,12 @@ test('console page: type a command, read the reply', async ({ page }) => {
 test('console page for a shut-off VM shows the start hint', async ({ page }) => {
   await api.action(serverId, 'win10', 'destroy').catch(() => {});
   await page.goto(`${url()}/servers/${serverId}/vms/win10/console`);
-  await expect(page.locator('.banner.warn', { hasText: /Start it/ })).toBeVisible();
+  // The hint lives in the display area (the bar carries the same text);
+  // the terminal must not be present for a shut-off VM.
+  await expect(page.locator('main', { hasText: /start it/ })).toBeVisible();
+  await expect(
+    page.locator('.viewer-status', { hasText: /start it first/ }),
+  ).toBeVisible();
   await expect(page.locator('#term')).toHaveCount(0);
 });
 

@@ -177,6 +177,8 @@ body.viewer {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Zoom > 100% grows the canvas past the area: clip it centred. */
+  overflow: hidden;
   /* The SPICE fork sets the screen element's height inline on every
      SURFACE_CREATE (upstream's demo page grows with its content, so
      the inline value is right there). Our display is a fixed viewport
@@ -208,6 +210,24 @@ body.viewer {
   z-index: 5;
 }
 .viewer-log p { margin: 0.2rem 0; }
+/* Bar toggles (audio / guest resize) and the zoom select. */
+.viewer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.viewer-zoom {
+  font-size: 0.8rem;
+  padding: 0.15rem 0.2rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
 .spice-message-info { color: var(--muted); }
 .spice-message-warning { color: #d9a441; }
 .spice-message-error { color: var(--danger); }
