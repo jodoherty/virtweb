@@ -5,6 +5,7 @@
   <span class="viewer-tools">
     <span id="spice-status" class="viewer-status muted">{{if not .Running}}This VM is {{.VM.State}} — start it first.{{else}}{{if .VM.SpiceAddr}}SPICE display: <code>{{.VM.SpiceAddr}}</code> (resolved on the server from <code>virsh domdisplay</code>; <code>127.0.0.1</code> means the server host itself, where SPICE is often loopback-bound).{{else}}No SPICE display reported — start the VM first.{{end}}{{end}}</span>
     <button id="spice-reconnect" hidden>Reconnect</button>
+    <button id="spice-disconnect" hidden>Disconnect</button>
     <button id="spice-logtoggle" type="button">Log</button>
     <button id="spice-fullscreen" type="button">Fullscreen</button>
   </span>

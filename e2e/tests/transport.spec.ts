@@ -372,11 +372,17 @@ test('spice page: fork over the tunnel (transport smoke)', async ({ page }) => {
   // is resolved server-side from the stub VM's SpiceAddr.
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
   await expect(page.locator('#spice-status')).toContainText('127.0.0.1:5991');
+  // Disconnect is only on screen while a session is live: hidden before
+  // the first connect attempt, and still hidden after a failed one
+  // (Reconnect is the action button in that state — the two never
+  // share the screen).
+  await expect(page.locator('#spice-disconnect')).toBeHidden();
   await page.click('button[type=submit]');
   await expect(page.locator('#spice-status')).toContainText(/magic mismatch/, {
     timeout: 15_000,
   });
   // A failed SPICE connect offers Reconnect.
   await expect(page.locator('#spice-reconnect')).toBeVisible();
+  await expect(page.locator('#spice-disconnect')).toBeHidden();
   await page.close();
 });

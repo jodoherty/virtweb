@@ -13,11 +13,33 @@ if (reconnectBtn)
     clearRetries();
     location.reload();
   });
-function spiceStatus(msg, { failed = false, reconnect = false } = {}) {
+// The Disconnect button is only on screen while a session is live;
+// Reconnect takes over afterwards (both never share the screen).
+const disconnectBtn = document.getElementById('spice-disconnect');
+function spiceStatus(msg, { failed = false, reconnect = false, connected = false } = {}) {
   statusEl.textContent = msg;
   statusEl.classList.toggle('status-err', failed);
   if (reconnectBtn) reconnectBtn.hidden = !reconnect;
+  if (disconnectBtn) disconnectBtn.hidden = !connected;
 }
+if (disconnectBtn)
+  disconnectBtn.addEventListener('click', () => {
+    // Deliberate teardown in the fork's own idiom: siblings first, then
+    // the main channel in "closing" state, so the close events report
+    // nothing. Each channel dies with its tunnel session (the server
+    // kills the ssh -W process when the stream request ends).
+    const sp = window.__spice;
+    if (sp) {
+      sp.close_sibling_channels();
+      sp.cleanup();
+      window.__spice = undefined;
+    }
+    clearRetries();
+    spiceStatus('Disconnected.', { reconnect: true });
+    // Reconnect reloads the page; put the connect form back so the
+    // next Connect (possibly with a password) is one click away.
+    if (formEl) formEl.hidden = false;
+  });
 
 // The connect form is an overlay card that disappears once the
 // session is live; the display area never moves either way.
@@ -56,7 +78,7 @@ document.getElementById('spice-form').addEventListener('submit', (e) => {
     message_id: 'spice-messages',
     onsuccess: () => {
       clearRetries();
-      spiceStatus('Connected.', { reconnect: false });
+      spiceStatus('Connected.', { reconnect: false, connected: true });
       if (formEl) formEl.hidden = true;
     },
     onerror: (err) => {
