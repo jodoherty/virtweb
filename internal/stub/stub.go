@@ -102,6 +102,13 @@ type VMSpec struct {
 var defaultVMs = []VMSpec{
 	{Name: "debian-dev", VCPUs: 2, MemoryMiB: 4096, IP: "192.168.100.50", SpiceAddr: "127.0.0.1:5991"},
 	{Name: "win10", VCPUs: 4, MemoryMiB: 8192, IP: "192.168.168.51", VNCPort: 5901, SpiceAddr: "127.0.0.1:5992"},
+	// The "console drip": its serial console emits one line every
+	// dripInterval for a few seconds after the banner. Deterministic
+	// incremental output for the reverse-proxy arrival specs
+	// (e2e tests/proxy.spec.ts): a buffering proxy coalesces the
+	// drip into one batch, an unbuffered one keeps the arrival
+	// spread in time.
+	{Name: "drip", VCPUs: 1, MemoryMiB: 1024},
 }
 
 type vm struct {
@@ -506,6 +513,12 @@ func (b *Backend) Console(ctx context.Context, name string, in io.Reader, out io
 	_, _ = io.WriteString(out, p.banner)
 	_, _ = io.WriteString(out, p.motd)
 
+	if v.spec.Name == "drip" {
+		if err := dripOutput(ctx, out); err != nil {
+			return err // client went away mid-drip
+		}
+	}
+
 	if b.scenario == ScenarioConsoleDrop {
 		// Stream goes away shortly after the banner: the UI's
 		// "stream ended / reconnect" path.
@@ -518,6 +531,28 @@ func (b *Backend) Console(ctx context.Context, name string, in io.Reader, out io
 	}
 	_, _ = io.WriteString(out, p.prompt)
 	return b.shell(ctx, v, p, in, out)
+}
+
+// dripOutput emits one line every dripInterval, dripLines times —
+// the deterministic incremental-output source for the proxy specs.
+// It returns non-nil if the client disconnects mid-drip.
+const (
+	dripInterval = 300 * time.Millisecond
+	dripLines    = 8
+)
+
+func dripOutput(ctx context.Context, out io.Writer) error {
+	for i := 0; i < dripLines; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(dripInterval):
+		}
+		if _, err := fmt.Fprintf(out, "tick %d\n", i); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // shellProfile holds the per-VM terminal strings.

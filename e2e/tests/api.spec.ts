@@ -41,8 +41,9 @@ test('ping ok', async () => {
 test('default VM table is shut off', async () => {
   await ensureShutOff('debian-dev');
   await ensureShutOff('win10');
+  await ensureShutOff('drip');
   const vms = await api.listVMs(serverId);
-  expect(vms.map((v) => v.name)).toEqual(['debian-dev', 'win10']);
+  expect(vms.map((v) => v.name)).toEqual(['debian-dev', 'win10', 'drip']);
   for (const v of vms) {
     expect(v.state).toBe('shut off');
     expect(v.running).toBe(false);

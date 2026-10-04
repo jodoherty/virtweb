@@ -43,8 +43,8 @@ Manage it with the `env:*` scripts (all idempotent, non-interactive):
 
 | command | what it does |
 |---------|-------------|
-| `npm run env:up -- --backend stub\|libvirt` | build virtweb, start it, (libvirt: build image + start container), register the `e2e` server, write the manifest. No-op if already up with the same backend. |
-| `npm run env:down [--wipe]` | stop virtweb, remove the libvirt container, clear the manifest. `--wipe` also drops the guest-disk volume (forces re-download). |
+| `npm run env:up -- --backend stub\|libvirt [--proxy K]` | build virtweb, start it, (libvirt: build image + start container), optionally start a reverse-proxy container in front of it (`--proxy haproxy-l7\|haproxy-l4\|traefik-l7\|traefik-l4`, default `none`), register the `e2e` server, write the manifest. No-op if already up with the same backend+proxy. |
+| `npm run env:down [--wipe]` | stop virtweb, remove the libvirt + proxy containers, clear the manifest. `--wipe` also drops the guest-disk volume (forces re-download). |
 | `npm run env:status [--json]` | is it up? prints `url`, `pid`, `backend`, `serverId`. |
 | `npm run env:logs` | tail the last 100 lines of the virtweb log. |
 | `npm run env:reset` | `env:down` + wipe the data dir (fresh `servers.json` / VM state on next up). |
@@ -137,11 +137,30 @@ Spec files:
 | `tests/api.spec.ts` | stub | REST: servers CRUD, ping, list, actions |
 | `tests/console-protocol.spec.ts` | stub | streaming, 409 concurrent, disconnect cleanup, input-after-close, idle KEEPALIVE, wire-protocol-v2 terminal frames, `STUB_SCENARIO` error paths |
 | `tests/transport.spec.ts` | stub | console/VNC/SPICE transport smoke over the tunnel, tunnel terminal frames, auto-retry |
+| `tests/proxy.spec.ts` | stub | reverse-proxy axis: incremental arrival of the `drip` VM's console stream through the env proxy, idle-stream survival (L7), negative control (4 s-timeout proxy must cut the stream) — the L7/L4 specs skip on `--proxy none` envs |
 | `tests/ui.spec.ts` | stub | dashboard, add-server form, VM list, console page, start |
 | `tests/guest.real.spec.ts` | libvirt | one sequential story: lifecycle, TCG boot + real IP, real serial-console login + `echo` round-trip, VNC RFB handshake over the tunnel, shutdown |
 
 `guest.real.spec.ts` is a single `.describe.serial` so a failure leaves
 the guest in a known, inspectable state.
+
+### The reverse-proxy axis
+
+`--proxy` is orthogonal to `--backend`: the manifest URL becomes the
+proxy's URL and *every* stub spec runs through a real HAProxy/Traefik
+container (`src/env/proxy.js`, fixtures in `fixtures/proxy/` —
+`{{PROXY_PORT}}`/`{{BACKEND_PORT}}` templates rendered at env:up,
+mounted read-only into the podman container, `--network host`). The
+manifest gains `proxy: {kind, port, container, image}` and
+`backendPort` (the direct virtweb port, used by the negative-control
+spec). `src/env/proxy.js isL7(kind)` drives the adaptive deadlines in
+`playwright.config.ts` (L7 envs get a 90 s test timeout) and in
+`waitForNoSession`/`settle` (45 s settles). `make e2e-proxy` (repo
+root) loops the four kinds; the release gate includes it. Two quirks
+are handled there, not in the specs: the Traefik cold-start 404
+window (`waitProxyReady`) and the negative control's own short-lived
+proxy (`startNegativeControl`/`negativeControlDown`, container
+`vw-e2e-proxy-negctl`).
 
 ## Test helpers (`src/`)
 

@@ -21,14 +21,33 @@ export function build() {
   }
 }
 
-// pickPort reserves an ephemeral localhost port.
+// pickPort returns a port free on 127.0.0.1. It also rejects ports
+// still held by sockets in TIME_WAIT: under rootless podman a freshly
+// removed container can be unable to re-bind its old port for a few
+// seconds, so an env:down -> env:up cycle on the same port would
+// otherwise fail the proxy readiness wait with "HTTP 404" (a stale
+// peer still answering) or connection-refused.
+function portHeld(port) {
+  const r = spawnSync('ss', ['-Htln', `(sport = ${port})`], {
+    stdio: 'pipe',
+  });
+  return r.status === 0 && r.stdout.trim().length > 0;
+}
+
 export function pickPort() {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.once('error', reject);
     srv.listen(0, '127.0.0.1', () => {
       const { port } = srv.address();
-      srv.close(() => resolve(port));
+      srv.close(() => {
+        if (portHeld(port)) {
+          // retry with a fresh ephemeral port
+          resolve(pickPort());
+        } else {
+          resolve(port);
+        }
+      });
     });
   });
 }

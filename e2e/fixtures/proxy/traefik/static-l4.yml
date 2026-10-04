@@ -1,0 +1,9 @@
+# e2e fixture: Traefik L4 (TCP pass-through) in front of virtweb.
+entryPoints:
+  web:
+    address: ":{{PROXY_PORT}}"
+providers:
+  file:
+    filename: /etc/traefik/tcp.yml
+log:
+  level: ERROR

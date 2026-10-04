@@ -1,0 +1,9 @@
+# e2e fixture: Traefik L7 (Caddy HTTP) in front of virtweb.
+entryPoints:
+  web:
+    address: ":{{PROXY_PORT}}"
+providers:
+  file:
+    filename: /etc/traefik/routes.yml
+log:
+  level: ERROR

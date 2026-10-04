@@ -1,0 +1,12 @@
+tcp:
+  routers:
+    default:
+      rule: "HostSNI(`*`)"
+      entryPoints: [web]
+      service: virtweb
+  services:
+    virtweb:
+      loadBalancer:
+        servers:
+          # v3.1 file provider: TCP servers use `address`, not `url`.
+          - address: "127.0.0.1:{{BACKEND_PORT}}"

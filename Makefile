@@ -15,7 +15,7 @@ DIST    := dist
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w
 
-.PHONY: all build dist test vet e2e-stub e2e-libvirt check release clean
+.PHONY: all build dist test vet e2e-stub e2e-libvirt e2e-proxy check release clean
 
 # Default: build the binary for the host you're on.
 all: build
@@ -46,12 +46,23 @@ e2e-stub:
 e2e-libvirt:
 	cd e2e && npm run env:up -- --backend libvirt && npx playwright test --project=libvirt
 
+# Reverse-proxy axis: the stub suite behind each real proxy (HAProxy and
+# Traefik, L7 and L4). Verifies the streaming responses survive real
+# L7 buffering / idle-timeout behavior; L4 pass-through is the
+# production topology. Needs podman (images pull on first use).
+e2e-proxy:
+	@for kind in haproxy-l7 haproxy-l4 traefik-l7 traefik-l4; do 		echo "=== e2e (proxy $$kind) ==="; 		cd e2e && npm run env:down >/dev/null 2>&1; \
+		npm run env:up -- --backend stub --proxy $$kind && npx playwright test --project=stub \
+			|| { cd .. && exit 1; }; 	done
+	cd e2e && npm run env:down
+
 # Always-run gate: static checks, unit tests, fast e2e tier.
 check: vet test e2e-stub
 
-# Before-release gate: `check` plus the real libvirt tier. Stub-green is
-# NOT release-green — the real tier must actually run.
-release: check e2e-libvirt
+# Before-release gate: `check`, the real libvirt tier, and the reverse
+# proxy tiers. Stub-green is NOT release-green — the real tiers must
+# actually run.
+release: check e2e-libvirt e2e-proxy
 
 clean:
 	rm -f $(BINARY)

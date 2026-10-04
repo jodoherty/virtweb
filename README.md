@@ -357,6 +357,20 @@ project) and has two tiers:
 - **libvirt** (`@real`) — a rootless-podman libvirt container acting as
   the remote host, exercising the real ssh/virsh/transport path.
 
+A third, orthogonal axis puts the whole stub suite behind a **real
+reverse proxy** — HAProxy or Traefik, L7 (HTTP) or L4 (TCP pass-through)
+— to verify the streaming console/display responses survive real proxy
+buffering and idle-timeout behavior:
+
+```sh
+npm run env:up -- --backend stub --proxy haproxy-l7   # or -l4, traefik-l7/l4
+npx playwright test --project=stub
+```
+
+(`make e2e-proxy` loops all four; `tests/proxy.spec.ts` carries the
+proxy-specific assertions, including a negative control that proves the
+idle-survival check is not vacuous.)
+
 Run and debug it (commands, the manifest, attach vs own, raw-serial
 access): see **`e2e/AGENTS.md`**. Design rationale: `TESTING.md` in the
 parent directory.
@@ -368,13 +382,16 @@ single command:
 
 ```sh
 make check     # always run: go vet + unit tests + the fast (stub) e2e tier
-make release   # before a release: `check` + the slow, real (libvirt) e2e tier
+make release   # before a release: `check` + the real libvirt tier + all four
+               # reverse-proxy tiers (HAProxy/Traefik, L7 and L4)
 ```
 
 `make dist` produces the deployable `dist/virtweb-linux-amd64` binary.
-**Stub-green is not release-green** — the real libvirt tier must actually
-run before a release. The real (libvirt) tier needs podman + gcc and is
-slow (TCG boot), so run `make release` rather than on every build.
+**Stub-green is not release-green** — the real libvirt tier and the
+proxy tiers must actually run before a release. The real (libvirt) tier
+needs podman + gcc and is slow (TCG boot); the proxy tiers need podman
+and pull small images on first use — so run `make release` rather than
+on every build.
 
 ## Layout
 

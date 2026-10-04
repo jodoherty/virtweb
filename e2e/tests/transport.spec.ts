@@ -14,6 +14,7 @@ import { openTunnel, TunnelSession } from '../src/tunnel.js';
 import { encodeFrame, TAG } from '../src/frames.js';
 import { waitFor } from '../src/wait.js';
 import { startStub } from '../src/stubInstance.js';
+import { isL7 } from '../src/env/proxy.js';
 
 let m: ReturnType<typeof requireEnv>;
 let api: Api;
@@ -49,11 +50,14 @@ async function settle(sid: string | null | undefined) {
   // Probe with a protocol-correct KEEPALIVE frame: 204 while the
   // session is live, 404 once the server has dropped it.
   const probe = encodeFrame(TAG.keepalive, new Uint8Array(0));
+  // L7 proxies settle a graceful client FIN only after their idle
+  // timeout (see isL7); give the settle the matching deadline.
+  const timeout = m?.proxy && isL7(m.proxy.kind) ? 45_000 : 15_000;
   await waitFor(async () => {
     const res = await fetch(inputUrl, { method: 'POST', body: probe });
     await res.body?.cancel();
     return res.status === 404;
-  });
+  }, { timeout, message: `session ${sid} dropped` });
 }
 
 test.afterEach(async () => {

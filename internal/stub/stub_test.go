@@ -83,15 +83,15 @@ func consoleOutput(t *testing.T, b *Backend, name, in string) string {
 
 func TestListVMsDefaultTable(t *testing.T) {
 	b := newTestBackend(t)
-	if got := b.VMNames(); got[0] != "debian-dev" || got[1] != "win10" || len(got) != 2 {
+	if got := b.VMNames(); got[0] != "debian-dev" || got[1] != "win10" || got[2] != "drip" || len(got) != 3 {
 		t.Fatalf("VMNames = %v", got)
 	}
 	vms, err := b.ListVMs(context.Background())
 	if err != nil {
 		t.Fatalf("ListVMs: %v", err)
 	}
-	if len(vms) != 2 {
-		t.Fatalf("got %d VMs, want 2", len(vms))
+	if len(vms) != 3 {
+		t.Fatalf("got %d VMs, want 3", len(vms))
 	}
 	d := vms[0]
 	if d.State != "shut off" || d.Running {

@@ -1,3 +1,5 @@
+import { isL7 } from './env/proxy.js';
+import { read } from './env/manifest.js';
 // Consumes the console output stream (chunked GET → ReadableStream) and
 // sends keystrokes (POST raw bytes), mirroring what the browser does.
 // Every byte in both directions is appended to logPath.
@@ -109,7 +111,20 @@ export async function openConsole(opts) {
 // disconnect asynchronously, so a just-closed session may still be
 // registered for a moment; this settles that so the next test starts from
 // a clean state in the shared persistent env.
-export async function waitForNoSession(baseUrl, serverId, vm, { timeout = 10000, interval = 100 } = {}) {
+// Default deadline is adaptive: through an L7 proxy a graceful
+// client FIN does not reach the backend until the proxy's idle
+// timeout (see src/env/proxy.js isL7), so the session settles late;
+// direct/L4 settle promptly.
+function noSessionTimeout() {
+  try {
+    const m = read();
+    return m?.proxy && isL7(m.proxy.kind) ? 45000 : 10000;
+  } catch {
+    return 10000;
+  }
+}
+
+export async function waitForNoSession(baseUrl, serverId, vm, { timeout = noSessionTimeout(), interval = 100 } = {}) {
   const inputUrl = `${baseUrl}/api/servers/${serverId}/vms/${encodeURIComponent(vm)}/console/input`;
   // Probe with a protocol-correct KEEPALIVE frame: 204 while the
   // session is live, 404 once the server has dropped it.

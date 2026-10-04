@@ -2,7 +2,7 @@
 // --json where sensible. Phase 2 implements the stub backend; the
 // libvirt container backend joins in phase 3.
 //
-//   node src/cli/env.js up [--backend stub]
+//   node src/cli/env.js up [--backend stub] [--proxy haproxy-l7|haproxy-l4|traefik-l7|traefik-l4]
 //   node src/cli/env.js down
 //   node src/cli/env.js status [--json]
 //   node src/cli/env.js logs
@@ -26,6 +26,7 @@ import {
 } from '../env/virtweb.js';
 import { Api } from '../api.js';
 import * as libvirt from '../env/libvirt.js';
+import * as proxy from '../env/proxy.js';
 
 const [,, cmd, ...rest] = process.argv;
 const flags = new Set(rest.filter((a) => a.startsWith('--')));
@@ -57,9 +58,14 @@ async function cmdUp() {
     console.error(`env: unknown backend ${JSON.stringify(backend)}`);
     process.exit(1);
   }
+  const proxyKind = flagVal('--proxy') ?? 'none';
+  if (proxyKind !== 'none' && !proxy.PROXY_KINDS.includes(proxyKind)) {
+    console.error(`env: unknown proxy ${JSON.stringify(proxyKind)} (want ${proxy.PROXY_KINDS.join(', ')} or none)`);
+    process.exit(1);
+  }
   const m = manifest.read();
-  if (m?.backend === backend && manifestLive(m)) {
-    console.log(`env already up: ${m.virtweb.url} (pid ${m.virtweb.pid})`);
+  if (m?.backend === backend && (m.proxy?.kind ?? 'none') === proxyKind && manifestLive(m)) {
+    console.log(`env already up: ${m.virtweb.url} (pid ${m.virtweb.pid})${proxyKind !== 'none' ? ` [proxy: ${m.proxy.kind}]` : ''}`);
     return;
   }
   // Deterministic env: wipe the data dir so server registration is fresh.
@@ -69,9 +75,18 @@ async function cmdUp() {
   build();
   const port = await pickPort();
   const { pid, logPath } = start({ port, backend: backend === 'libvirt' ? 'ssh' : 'stub' });
-  const url = `http://127.0.0.1:${port}`;
-  console.log(`starting virtweb (${backend} backend) on ${url} (pid ${pid})...`);
-  await waitReady(url, 15000);
+  console.log(`starting virtweb (${backend} backend) on ${port} (pid ${pid})...`);
+  await waitReady(`http://127.0.0.1:${port}`, 15000);
+
+  // The proxy axis (optional): a real proxy container in front of
+  // virtweb; the env URL the tests use becomes the proxy's URL.
+  let proxyInfo;
+  let url = `http://127.0.0.1:${port}`;
+  if (proxyKind !== 'none') {
+    console.log(`starting the reverse proxy (${proxyKind}) in front of virtweb...`);
+    proxyInfo = await proxy.startProxy(proxyKind, port, waitReady);
+    url = `http://127.0.0.1:${proxyInfo.port}`;
+  }
 
   let sshPort;
   let fields;
@@ -89,16 +104,23 @@ async function cmdUp() {
     backend,
     created: new Date().toISOString(),
     virtweb: { url, pid, log: path.relative(manifest.E2E_ROOT, logPath) },
+    // The direct virtweb port (the manifest URL may be the proxy's):
+    // tests/proxy.spec.ts's negative control proxies this port.
+    backendPort: port,
+    ...(proxyInfo ? { proxy: proxyInfo } : {}),
     ...(sshPort ? { sshPort } : {}),
     serverId,
   });
   console.log(
-    `env up: ${url}  pid ${pid}  serverId ${serverId}\n` +
+    `env up: ${url}  pid ${pid}  serverId ${serverId}${proxyInfo ? `  [proxy: ${proxyInfo.kind}]` : ''}\n` +
       `  logs: npm run env:logs\n  status: npm run env:status`,
   );
 }
 
 function cmdDown() {
+  // Clean any stray proxy first — a failed env:up leaves one behind
+  // even though the manifest was never written.
+  proxy.proxyDown();
   const m = manifest.read();
   if (!m) {
     console.log('env is not up (no manifest)');
@@ -132,6 +154,7 @@ async function cmdStatus() {
   const status = {
     up: isAlive(m.virtweb.pid) && urlOk,
     backend: m.backend,
+    proxy: m.proxy?.kind ?? 'none',
     pid: m.virtweb.pid,
     url: m.virtweb.url,
     serverId: m.serverId,
@@ -152,6 +175,11 @@ function cmdLogs() {
   }
   const lines = readFileSync(log, 'utf8').split('\n').slice(-100);
   for (const line of lines) console.log(`virtweb | ${line}`);
+  const m = manifest.read();
+  if (m?.proxy) {
+    const pl = proxy.proxyLogs(100).trim().split('\n');
+    for (const line of pl) console.log(`proxy   | ${line}`);
+  }
 }
 
 function cmdReset() {
@@ -253,8 +281,8 @@ switch (cmd) {
   case 'doctor': cmdDoctor(); break;
   default:
     console.error(
-      'usage: env.js <up [--backend stub|libvirt] | down [--wipe] | status [--json] | ' +
-        'logs | reset | restart-api | doctor [--json]>',
+      'usage: env.js <up [--backend stub|libvirt] [--proxy haproxy-l7|haproxy-l4|traefik-l7|traefik-l4] | ' +
+        'down [--wipe] | status [--json] | logs | reset | restart-api | doctor [--json]>',
     );
     process.exit(2);
 }

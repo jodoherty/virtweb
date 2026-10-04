@@ -5,6 +5,7 @@ import { openConsole, ConsoleSession, waitForNoSession } from '../src/console.js
 import { FrameDecoder, HELLO_FLAG_TERMINAL } from '../src/frames.js';
 import { waitFor } from '../src/wait.js';
 import { startStub } from '../src/stubInstance.js';
+import { isL7 } from '../src/env/proxy.js';
 
 let api: Api;
 let serverId: string;
@@ -78,7 +79,11 @@ test('client disconnect kills the session; input after close -> 404', async () =
   await s.input('hostname\r');
   await waitFor(async () => s.lines.includes('debian-dev'));
   await s.close(); // cancel the stream => server cancels r.Context()
+  // L7 proxies settle a graceful FIN only after their idle timeout.
+  const m2 = requireEnv();
+  const timeout = m2?.proxy && isL7(m2.proxy.kind) ? 45_000 : 15_000;
   await waitFor(async () => (await s.input('x\r')) === 404, {
+    timeout,
     message: 'session gone after disconnect',
   });
 });
@@ -178,7 +183,7 @@ test('scenario fail-ping: ping fails, list works', async () => {
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(502);
     const vms = await api2.listVMs(inst.serverId);
-    expect(vms.map((v) => v.name)).toEqual(['debian-dev', 'win10']);
+    expect(vms.map((v) => v.name)).toEqual(['debian-dev', 'win10', 'drip']);
   } finally {
     await inst.close();
   }
