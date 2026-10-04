@@ -81,6 +81,12 @@ const settings = {
 if (![25, 33, 50, 66, 75, 100, 150, 200].includes(settings.zoom))
   settings.zoom = 100;
 const screenEl = document.getElementById('spice');
+// The display area is the remote screen, not the page: the host
+// context menu (right-click, and on Firefox also a middle-click) must
+// not pop up over it — the guest has its own context menus. The fork
+// already suppresses it on the canvas; this covers the letterbox and
+// zoom-overflow around it.
+screenEl.addEventListener('contextmenu', (e) => e.preventDefault());
 const audioTgl = document.getElementById('spice-audio');
 const resizeTgl = document.getElementById('spice-guestresize');
 const zoomSel = document.getElementById('spice-zoom');

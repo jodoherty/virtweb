@@ -173,6 +173,16 @@ function handle_mousedown(e)
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
         this.sc.inputs.send_msg(msg);
 
+    /* virtweb delta: button telemetry — 'a menu pops up when I click'
+       reports are answered from the Log: it shows exactly which
+       button the guest received, where, and in which mouse mode. */
+    if (this.sc)
+        this.sc.log_info("mouse: press button " + (e.button + 1) +
+            " (" + ["left", "middle", "right"][e.button] + ") at " +
+            e._vwx + "," + e._vwy +
+            " [" + (this.sc.mouse_mode == Constants.SPICE_MOUSE_MODE_CLIENT
+                     ? "client" : "server") + " mode]");
+
     e.preventDefault();
 }
 
@@ -189,6 +199,11 @@ function handle_mouseup(e)
     msg.build_msg(Constants.SPICE_MSGC_INPUTS_MOUSE_RELEASE, release);
     if (this.sc && this.sc.inputs && this.sc.inputs.state === "ready")
         this.sc.inputs.send_msg(msg);
+
+    /* virtweb delta: telemetry (see handle_mousedown). */
+    if (this.sc)
+        this.sc.log_info("mouse: release button " + (e.button + 1) +
+            " (" + ["left", "middle", "right"][e.button] + ")");
 
     e.preventDefault();
 }
