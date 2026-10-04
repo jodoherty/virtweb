@@ -120,6 +120,8 @@ zoomSel.addEventListener('change', () => {
   settings.zoom = Number(zoomSel.value);
   localStorage.setItem('vw.spice.zoom', String(settings.zoom));
   applyZoom();
+  // The requested guest resolution scales with the zoom.
+  scheduleGuestResize();
 });
 
 // Audio: the fork creates its <audio> element when the guest first
@@ -139,19 +141,22 @@ audioTgl.addEventListener('change', () => {
   applyAudio();
 });
 
-// Guest resize: ask the vdagent to resize the guest display to this
-// window's logical size (1 guest px = 1 CSS px at 100% zoom), so the
-// display fills the area at native resolution. Off by default; sent
-// on agent (re)connect, when the toggle is turned on, and when the
-// window settles (debounced). resize_window queues the MonConfig
-// until the agent is up, so no extra guarding is needed.
+// Guest resize: ask the vdagent to resize the guest display to the
+// logical pixels available, *scaled by the zoom*: at 100% the guest
+// fills the display area (1 guest px = 1 CSS px), at 50% it is 2x
+// larger along each axis (the zoom then magnifies a larger canvas),
+// at 200% it is half as large. Off by default; sent on agent
+// (re)connect, when the toggle is turned on, on zoom changes, and
+// when the window settles (debounced). resize_window queues the
+// MonConfig until the agent is up, so no extra guarding is needed.
 function guestResize() {
   const sp = window.__spice;
   if (!sp || !settings.guestResize) return;
-  let w = screenEl.clientWidth || window.innerWidth;
-  let h = screenEl.clientHeight || window.innerHeight;
-  w -= w % 8; // Xorg requires multiples of 8 (matches the fork's resize_helper)
-  h -= h % 8;
+  const z = settings.zoom / 100;
+  let w = (screenEl.clientWidth || window.innerWidth) / z;
+  let h = (screenEl.clientHeight || window.innerHeight) / z;
+  w = Math.floor(w / 8) * 8; // Xorg requires multiples of 8 (the fork's resize_helper does the same)
+  h = Math.floor(h / 8) * 8;
   if (w < 64 || h < 48) return;
   sp.resize_window(0, w, h, 32, 0, 0);
   const st = document.getElementById('spice-status');
@@ -161,11 +166,12 @@ function guestResize() {
     st.textContent = `Connected. Guest resize requested (${w}×${h}).`;
 }
 let guestResizeTimer;
-window.addEventListener('resize', () => {
+function scheduleGuestResize() {
   if (!settings.guestResize) return;
   clearTimeout(guestResizeTimer);
   guestResizeTimer = setTimeout(guestResize, 400);
-});
+}
+window.addEventListener('resize', scheduleGuestResize);
 resizeTgl.addEventListener('change', () => {
   settings.guestResize = resizeTgl.checked;
   localStorage.setItem('vw.spice.resize', settings.guestResize ? '1' : '0');

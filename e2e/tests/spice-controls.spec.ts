@@ -25,7 +25,7 @@ test('defaults: audio on, guest resize off, zoom 100%', async ({ page }) => {
 test('zoom engine: canvas sized in logical px, relative to the fit', async ({
   page,
 }) => {
-  page.setViewportSize({ width: 1280, height: 800 });
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
   // Synthetic bitmap standing in for the fork's canvas. The fitted size
   // is min(aw/bw, ah/bh) of the display area (the area is the window
@@ -98,4 +98,54 @@ test('guest resize request is gated on the toggle', async ({ page }) => {
   await page.locator('#spice-guestresize').uncheck();
   expect(errors).toEqual([]);
   await expect(page.locator('#spice-guestresize')).not.toBeChecked();
+});
+
+test('guest resize resolution scales with the zoom', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
+  // Spy on the connection the page would use: capture the MonConfig
+  // requests. (No live SPICE session exists against the stub, so this
+  // stands in for window.__spice.)
+  await page.evaluate(() => {
+    (window as any).__spice = {
+      calls: [] as number[][],
+      resize_window: (_f: number, w: number, h: number) =>
+        (window as any).__spice.calls.push([w, h]),
+    };
+  });
+  await page.locator('#spice-guestresize').check();
+  await page.waitForTimeout(100);
+  const req = async () =>
+    page.evaluate(() => (window as any).__spice.calls.at(-1) as [number, number]);
+  const area = async () =>
+    page.evaluate(() => {
+      const s = document.getElementById('spice')!;
+      return [s.clientWidth, s.clientHeight] as [number, number];
+    });
+  const expectReq = async (zoom: number) => {
+    const [aw, ah] = await area();
+    const [w, h] = await req();
+    const z = zoom / 100;
+    // logical pixels available, scaled by the zoom, rounded down to a
+    // multiple of 8 on each axis
+    expect(w).toBe(Math.floor(aw / z / 8) * 8);
+    expect(h).toBe(Math.floor(ah / z / 8) * 8);
+  };
+  await expectReq(100);
+  const [w100, h100] = await req();
+  // 50% zoom: the resolution is 2x the area along each axis (modulo the
+  // multiple-of-8 rounding)
+  await page.locator('#spice-zoom').selectOption('50');
+  await page.waitForTimeout(700); // debounced
+  const [aw, ah] = await area();
+  const [w50, h50] = await req();
+  expect(w50).toBe(Math.floor(aw / 0.5 / 8) * 8);
+  expect(h50).toBe(Math.floor(ah / 0.5 / 8) * 8);
+  expect(Math.abs(w50 - 2 * w100)).toBeLessThanOrEqual(8);
+  expect(Math.abs(h50 - 2 * h100)).toBeLessThanOrEqual(8);
+  await expectReq(50);
+  // back to 100%: the original (area-sized) request
+  await page.locator('#spice-zoom').selectOption('100');
+  await page.waitForTimeout(700);
+  await expectReq(100);
 });
