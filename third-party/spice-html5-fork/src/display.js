@@ -810,6 +810,25 @@ SpiceDisplayConn.prototype.process_channel_message = function(msg)
 
         m.surface.canvas = canvas;
         m.surface.draw_count = 0;
+
+        /* virtweb delta: a surface can be destroyed and recreated with
+           the SAME id while it was live (a guest reboot re-inits the
+           display: QEMU sends destroy + create pairs, and the
+           resolution can change several times during firmware boot).
+           The queued delete of the old surface is then dropped as
+           stale (surface_live no longer matches), and this create
+           appended its canvas beside the old one — the page showed
+           side-by-side viewports, newest on the right, with input
+           bound to every leaked canvas. Retire the replaced
+           surface's canvas here, at the moment it stops being the
+           live one. */
+        var replaced = this.surfaces[m.surface.surface_id];
+        if (replaced && replaced.canvas && replaced.canvas !== canvas &&
+            replaced.canvas.parentNode)
+        {
+            replaced.canvas.parentNode.removeChild(replaced.canvas);
+        }
+
         this.surfaces[m.surface.surface_id] = m.surface;
 
         if (m.surface.flags & Constants.SPICE_SURFACE_FLAGS_PRIMARY)
