@@ -177,6 +177,14 @@ body.viewer {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* The SPICE fork sets the screen element's height inline on every
+     SURFACE_CREATE (upstream's demo page grows with its content, so
+     the inline value is right there). Our display is a fixed viewport
+     area: that inline value would pin it to the guest's bitmap
+     height — dead space below, and no growth in fullscreen — so
+     !important keeps inset: 0 in charge. The canvas letterboxes
+     itself inside with object-fit: contain. */
+  height: auto !important;
 }
 .viewer-display canvas {
   width: 100%;

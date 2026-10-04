@@ -42,6 +42,7 @@ if (disconnectBtn)
     if (screen) {
       screen.innerHTML = '';
       screen.style.cursor = '';
+      screen.style.height = '';
     }
     clearRetries();
     spiceStatus('Disconnected.', { reconnect: true });
