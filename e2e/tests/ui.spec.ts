@@ -157,15 +157,14 @@ test('VM detail page shows live info and the domain XML', async ({ page }) => {
   await expect(page.locator('#vm-xml')).toContainText('<name>debian-dev</name>');
   await expect(page.locator('#copy-xml')).toBeVisible();
 
-  // Action forms + display links are offered from the detail page, and
-  // the interrupting actions (shutdown/destroy/reboot) are guarded by
-  // the confirm dialog (data-confirm), while start is not.
-  await expect(page.locator('form[action$="/start"]')).toBeVisible();
+  // The detail page offers exactly the valid transitions: the VM is
+  // running, so shutdown/destroy/reboot (each guarded by the confirm
+  // dialog) and no start.
   for (const a of ['shutdown', 'destroy', 'reboot']) {
     await expect(page.locator(`form[action$="/${a}"]`)).toHaveAttribute(
       'data-confirm', /.+/);
   }
-  await expect(page.locator('form[action$="/start"]')).not.toHaveAttribute('data-confirm');
+  await expect(page.locator('form[action$="/start"]')).toHaveCount(0);
   // Display links match the domain's graphics: debian-dev is SPICE —
   // console + SPICE are offered, VNC is not (and never all three at
   // once).

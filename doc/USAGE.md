@@ -162,10 +162,11 @@ resource info, display addresses, the usual actions, and the current
 domain XML (`virsh dumpxml`) with a copy button. Row actions on the
 The server page's VM table is a *view*: state, resources, IP, and
 links to open a VM's console / VNC / SPICE page — no actions in the
-table. All actions live on the VM's detail page:
-**Start / Shutdown / Destroy / Reboot**, where the actions that
-interrupt a running VM (shutdown, destroy, reboot) are guarded by a
-confirmation dialog; start is not. The server is edited in place from
+table. All actions live on the VM's detail page, where only the
+transitions valid from the current state are offered: a shut-off VM
+shows **Start** (unconfirmed); a running VM shows **Shutdown /
+Destroy / Reboot** (each guarded by a confirmation dialog). The
+server is edited in place from
 its page as well (host/port/user, name, SSH credentials). Defining
 or undefining domains is not offered in the UI (virtweb manages
 existing VMs); the REST API below still exposes it for automation.

@@ -30,10 +30,11 @@ var testWeb = fstest.MapFS{
 			`</body></html>{{end}}`)},
 	"templates/vm.html": &fstest.MapFile{Data: []byte(
 		`{{define "vm"}}<h2>{{.VM.Name}}</h2>` +
-			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/start"></form>` +
+			`{{if .VM.Running}}` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/shutdown" data-confirm="Shut down?"></form>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/destroy" data-confirm="Destroy now?"></form>` +
 			`<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/reboot" data-confirm="Reboot?"></form>` +
+			`{{else}}<form method="post" action="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/start"></form>{{end}}` +
 			`{{if .VM.Running}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/console">console</a>` +
 			`{{if .VM.VNCPort}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/vnc">vnc</a>{{end}}` +
 			`{{if .VM.SpiceAddr}}<a href="/servers/{{.Server.ID}}/vms/{{.VM.Name}}/spice">spice</a>{{end}}{{end}}` +
@@ -313,7 +314,7 @@ func TestVMPage(t *testing.T) {
 		}
 	}
 	// actions + detail links are present
-	for _, want := range []string{"/vms/debian-dev/start", "/vms/debian-dev/console", "/vms/debian-dev/shutdown"} {
+	for _, want := range []string{"/vms/debian-dev/console", "/vms/debian-dev/spice", "/vms/debian-dev/shutdown"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("page missing link %q", want)
 		}
@@ -344,8 +345,8 @@ func TestInterruptActionsConfirmed(t *testing.T) {
 
 	// formTag returns the rendered <form ...></form> block that posts to
 	// the given action, "" when absent.
-	formTag := func(b, action string) string {
-		i := strings.Index(b, "/vms/debian-dev/"+action+"\"")
+	formTag := func(b, vm, action string) string {
+		i := strings.Index(b, "/vms/"+vm+"/"+action+"\"")
 		if i < 0 {
 			return ""
 		}
@@ -356,27 +357,38 @@ func TestInterruptActionsConfirmed(t *testing.T) {
 		return b[i : i+j]
 	}
 
-	// the detail page carries the actions
+	// the detail page offers exactly the valid transitions for the
+	// current state: debian-dev is running -> shutdown/destroy/reboot
+	// (with confirms), no start; win10 is shut off -> start only.
 	b := body(doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/debian-dev"))
 	for _, action := range []string{"shutdown", "destroy", "reboot"} {
-		tag := formTag(b, action)
+		tag := formTag(b, "debian-dev", action)
 		if tag == "" {
-			t.Fatalf("detail page: missing %s form", action)
+			t.Fatalf("running detail page: missing %s form", action)
 		}
 		if !strings.Contains(tag, "data-confirm=") {
-			t.Fatalf("detail page: %s form has no data-confirm: %q", action, tag)
+			t.Fatalf("running detail page: %s form has no data-confirm: %q", action, tag)
 		}
 	}
-	if tag := formTag(b, "start"); tag == "" {
-		t.Fatal("detail page: missing start form")
+	if tag := formTag(b, "debian-dev", "start"); tag != "" {
+		t.Fatalf("running detail page still offers start: %q", tag)
+	}
+	b = body(doGet(t, ui.Routes(), "/servers/"+srv.ID+"/vms/win10"))
+	if tag := formTag(b, "win10", "start"); tag == "" {
+		t.Fatal("shut-off detail page: missing start form")
 	} else if strings.Contains(tag, "data-confirm=") {
-		t.Fatalf("detail page: start form unexpectedly confirmed: %q", tag)
+		t.Fatalf("shut-off detail page: start form unexpectedly confirmed: %q", tag)
+	}
+	for _, action := range []string{"shutdown", "destroy", "reboot"} {
+		if tag := formTag(b, "debian-dev", action); tag != "" {
+			t.Fatalf("shut-off detail page offers %s: %q", action, tag)
+		}
 	}
 
 	// the listing has no actions at all — state and links only
 	b = body(doGet(t, ui.Routes(), "/servers/"+srv.ID))
 	for _, action := range []string{"start", "shutdown", "destroy", "reboot"} {
-		if tag := formTag(b, action); tag != "" {
+		if tag := formTag(b, "debian-dev", action); tag != "" {
 			t.Fatalf("listing offers %s form: %q", action, tag)
 		}
 	}

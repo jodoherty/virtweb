@@ -12,13 +12,16 @@
   {{if .VM.SpiceAddr}}<tr><th>SPICE</th><td>{{.VM.SpiceAddr}}</td></tr>{{end}}
 </table>
 <p class="actions">
-  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/start"><button>Start</button></form>
+  {{if .VM.Running}}
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/shutdown"
         data-confirm="Shut down {{.VM.Name}}? This interrupts the VM."><button>Shutdown</button></form>
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/destroy"
         data-confirm="Destroy {{.VM.Name}} now? This kills the VM (forced power-off) without a graceful shutdown."><button class="danger">Destroy</button></form>
   <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/reboot"
         data-confirm="Reboot {{.VM.Name}}? This interrupts the VM."><button>Reboot</button></form>
+  {{else}}
+  <form method="post" action="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/start"><button>Start</button></form>
+  {{end}}
   {{if .VM.Running}}
   <a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/console">Console</a>
   {{if .VM.VNCPort}}<a class="btn" href="/servers/{{.Server.ID}}/vms/{{q .VM.Name}}/vnc">VNC</a>{{end}}
