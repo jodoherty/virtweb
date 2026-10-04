@@ -154,7 +154,18 @@ export class DuplexChannel {
   constructor(streamUrl, inputUrl, options = {}) {
     if (!streamUrl) throw new Error('DuplexChannel: streamUrl required');
     if (!inputUrl) throw new Error('DuplexChannel: inputUrl required');
-    this.streamUrl = streamUrl;
+    // Firefox queues a second in-flight GET to the exact same URL
+    // behind the first one — the request stays pending indefinitely
+    // (observed: FF 155; Chrome is unaffected). SPICE opens several
+    // channels that would all fetch the master's URL, so every
+    // channel gets a unique one: each GET opens a fresh session
+    // anyway, so the distinction is semantically correct, not just a
+    // workaround. The server ignores the extra parameter.
+    const sep = streamUrl.includes('?') ? '&' : '?';
+    const uniq = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 10);
+    this.streamUrl = streamUrl + sep + 's=' + uniq;
     this.inputUrl = inputUrl;
     // connectTimeoutMs bounds how long open() may wait for the GET
     // response headers before giving up (0 disables the bound).

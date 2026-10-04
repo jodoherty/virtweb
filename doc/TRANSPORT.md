@@ -47,3 +47,14 @@ DATA payloads. A session that ends with SESSION_ERROR surfaces as
 "Connection lost: <message>"; a clean SESSION_END as "Session ended.".
 When the *client* goes away, no terminal frame is emitted — the client
 is gone, and the stream abort is itself the signal.
+
+## A Firefox quirk: one URL, one in-flight GET
+
+Firefox (observed: 155) queues a second in-flight GET to the *exact
+same URL* behind the first — it stays pending indefinitely, while
+Chrome opens both. SPICE child channels would all fetch the master's
+stream URL, so on Firefox only the master channel ever started
+("Connected." with a blank display). `DuplexChannel` therefore gives
+every channel a unique stream URL (an opaque `s=` parameter the
+server ignores); each GET opens a fresh session anyway, so the
+distinct URLs are semantically correct, not just a workaround.
