@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -40,6 +41,27 @@ type Std struct {
 	// StrictHostKeyChecking is the value for -o StrictHostKeyChecking=;
 	// "accept-new" when empty (trust first contact, verify thereafter).
 	StrictHostKeyChecking string
+	// Identity, when set, is passed to ssh as -i and — via
+	// IdentitiesOnly=yes — excludes the ssh agent and the ~/.ssh
+	// identity defaults, so only the named key is offered.
+	Identity string
+	// Password, when set, is offered for SSH password auth by wrapping
+	// ssh in sshpass (-f <tempfile>, mode 0600, removed after the call,
+	// so it never appears in a process list). BatchMode is dropped for
+	// such calls so the password prompt can be answered; the sshpass
+	// binary must be available (sshPassPath, default "sshpass").
+	Password string
+	// sshPassPath defaults to "sshpass" when empty (exported form kept
+	// unexported on purpose: it is a test seam, set via
+	// WithSSHPassPath).
+	sshPassPath string
+}
+
+// WithSSHPassPath returns s with the sshpass binary path overridden
+// (test seam).
+func (s *Std) WithSSHPassPath(p string) *Std {
+	s.sshPassPath = p
+	return s
 }
 
 // baseOpts are the options used for every connection.
@@ -56,14 +78,25 @@ func (s *Std) baseOpts(port int) []string {
 		hostKey = "accept-new"
 	}
 	opts := []string{
-		"BatchMode=yes",
 		"StrictHostKeyChecking=" + hostKey,
 		"ConnectTimeout=10",
+	}
+	// An explicit key is offered alone (no agent, no ~/.ssh defaults);
+	// a password needs the interactive prompt BatchMode would kill, so
+	// key-based calls stay non-interactive.
+	if s.Identity != "" {
+		opts = append(opts, "IdentitiesOnly=yes")
+	}
+	if s.Password == "" {
+		opts = append(opts, "BatchMode=yes")
 	}
 	opts = append(opts, s.ExtraOpts...)
 	args := []string{}
 	for _, o := range opts {
 		args = append(args, "-o", o)
+	}
+	if s.Identity != "" {
+		args = append(args, "-i", s.Identity)
 	}
 	if port > 0 && port != 22 {
 		args = append(args, "-p", strconv.Itoa(port))
@@ -85,10 +118,43 @@ func (s *Std) sshPath() string {
 	return "ssh"
 }
 
+// prepare returns the exec.Cmd for the ssh call. With a Password set it
+// wraps ssh in sshpass fed from a 0600 temp file (never argv); the
+// returned cleanup removes that file.
+func (s *Std) prepare(ctx context.Context, args []string) (*exec.Cmd, func(), error) {
+	if s.Password == "" {
+		return exec.CommandContext(ctx, s.sshPath(), args...), func() {}, nil
+	}
+	f, err := os.CreateTemp("", "virtweb-sshpass-*")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { os.Remove(f.Name()) }
+	if _, err := f.WriteString(s.Password); err != nil {
+		f.Close()
+		cleanup()
+		return nil, func() {}, err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	passPath := s.sshPassPath
+	if passPath == "" {
+		passPath = "sshpass"
+	}
+	return exec.CommandContext(ctx, passPath,
+		append([]string{"-f", f.Name(), s.sshPath()}, args...)...), cleanup, nil
+}
+
 // Run implements Runner.Run.
 func (s *Std) Run(ctx context.Context, user, host string, port int, command string) (string, error) {
 	args := append(s.baseOpts(port), s.dest(user, host), command)
-	cmd := exec.CommandContext(ctx, s.sshPath(), args...)
+	cmd, cleanup, err := s.prepare(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -111,7 +177,11 @@ func (s *Std) Connect(ctx context.Context, user, host string, port int, tty bool
 		args = append(args, "-T")
 	}
 	args = append(args, s.dest(user, host), command)
-	cmd := exec.CommandContext(ctx, s.sshPath(), args...)
+	cmd, cleanup, err := s.prepare(ctx, args)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	cmd.Stdin = in
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -122,13 +192,18 @@ func (s *Std) Connect(ctx context.Context, user, host string, port int, tty bool
 // out of the data stream (it would corrupt binary protocols) and is only
 // reported on failure.
 func (s *Std) Tunnel(ctx context.Context, user, host string, port int, target string, in io.Reader, out io.Writer) error {
-	args := append(s.baseOpts(port), "-N", "-W", target, s.dest(user, host))
-	cmd := exec.CommandContext(ctx, s.sshPath(), args...)
+	args := s.baseOpts(port)
+	args = append(args, "-N", "-W", target, s.dest(user, host))
+	cmd, cleanup, err := s.prepare(ctx, args)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	cmd.Stdin = in
 	cmd.Stdout = out
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		if msg := trimTrailing(stderr.String()); msg != "" {
 			return fmt.Errorf("ssh tunnel %s: %v: %s", target, err, msg)
@@ -136,10 +211,6 @@ func (s *Std) Tunnel(ctx context.Context, user, host string, port int, target st
 	}
 	return err
 }
-
-// filterStderr drops harmless locale noise ("setlocale: No such file or
-// directory") that some containers' login shells print on every remote
-// command, so it does not end up inside API error messages.
 func filterStderr(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {

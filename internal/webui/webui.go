@@ -140,10 +140,12 @@ func (u *UI) handleAddServer(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.Form
 	srv := virt.Server{
-		Name: strings.TrimSpace(f.Get("name")),
-		User: strings.TrimSpace(f.Get("user")),
-		Host: strings.TrimSpace(f.Get("host")),
-		URI:  f.Get("uri"),
+		Name:         strings.TrimSpace(f.Get("name")),
+		User:         strings.TrimSpace(f.Get("user")),
+		Host:         strings.TrimSpace(f.Get("host")),
+		URI:          f.Get("uri"),
+		IdentityFile: strings.TrimSpace(f.Get("identityFile")),
+		Password:     strings.TrimSpace(f.Get("password")),
 	}
 	if p := strings.TrimSpace(f.Get("port")); p != "" {
 		n, err := strconv.Atoi(p)
@@ -175,10 +177,12 @@ func (u *UI) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.Form
 	srv := virt.Server{
-		Name: strings.TrimSpace(f.Get("name")),
-		User: strings.TrimSpace(f.Get("user")),
-		Host: strings.TrimSpace(f.Get("host")),
-		URI:  f.Get("uri"),
+		Name:         strings.TrimSpace(f.Get("name")),
+		User:         strings.TrimSpace(f.Get("user")),
+		Host:         strings.TrimSpace(f.Get("host")),
+		URI:          f.Get("uri"),
+		IdentityFile: strings.TrimSpace(f.Get("identityFile")),
+		Password:     strings.TrimSpace(f.Get("password")),
 	}
 	if p := strings.TrimSpace(f.Get("port")); p != "" {
 		n, err := strconv.Atoi(p)

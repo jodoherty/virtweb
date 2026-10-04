@@ -18,6 +18,14 @@ type Server struct {
 	Host string `json:"host"`
 	Port int    `json:"port"` // 0 means the default SSH port (22)
 	URI  string `json:"uri"`  // libvirt URI, e.g. "qemu:///system"
+	// IdentityFile is a private key path on the virtweb host. When set,
+	// only that key is offered — the ssh agent and ~/.ssh identity
+	// defaults are excluded. Empty = default identities.
+	IdentityFile string `json:"identityFile,omitempty"`
+	// Password, when set, is used for SSH password auth (via sshpass).
+	// Stored in plaintext in servers.json (0600); the sshpass binary
+	// must be available on the virtweb host.
+	Password string `json:"password,omitempty"`
 }
 
 // VM is a virtual machine on a Server.

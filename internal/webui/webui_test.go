@@ -170,6 +170,8 @@ func TestAddServerForm(t *testing.T) {
 	form.Set("user", "u")
 	form.Set("host", "h2")
 	form.Set("port", "2222")
+	form.Set("identityFile", "/tmp/keys/host2.pem")
+	form.Set("password", "s3cret")
 	w := doForm(t, ui.Routes(), "/servers", form)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("got %d, want 303: %s", w.Code, body(w))
@@ -180,7 +182,8 @@ func TestAddServerForm(t *testing.T) {
 	}
 	id := strings.TrimPrefix(loc, "/servers/")
 	srv, err := st.Get(id)
-	if err != nil || srv.Name != "newhost" || srv.Port != 2222 {
+	if err != nil || srv.Name != "newhost" || srv.Port != 2222 ||
+		srv.IdentityFile != "/tmp/keys/host2.pem" || srv.Password != "s3cret" {
 		t.Fatalf("stored server %+v (err %v)", srv, err)
 	}
 }
@@ -205,13 +208,29 @@ func TestUpdateServerForm(t *testing.T) {
 	form.Set("host", "h2")
 	form.Set("port", "2222")
 	form.Set("uri", "qemu:///system")
+	form.Set("identityFile", "/tmp/keys/host2.pem")
 	w := doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("got %d, want 303: %s", w.Code, body(w))
 	}
 	got, err := st.Get(srv.ID) // id must be preserved
-	if err != nil || got.Name != "renamed" || got.Host != "h2" || got.Port != 2222 {
+	if err != nil || got.Name != "renamed" || got.Host != "h2" || got.Port != 2222 ||
+		got.IdentityFile != "/tmp/keys/host2.pem" {
 		t.Fatalf("stored server %+v (err %v)", got, err)
+	}
+
+	// clearing the credential fields drops them from the definition.
+	form2c := url.Values{}
+	form2c.Set("name", "renamed")
+	form2c.Set("user", "u2")
+	form2c.Set("host", "h2")
+	w = doForm(t, ui.Routes(), "/servers/"+srv.ID+"/update", form2c)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("got %d, want 303", w.Code)
+	}
+	got, err = st.Get(srv.ID)
+	if err != nil || got.IdentityFile != "" {
+		t.Fatalf("credential not cleared: %+v (err %v)", got, err)
 	}
 
 	// invalid (missing host) -> 400.

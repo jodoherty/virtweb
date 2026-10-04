@@ -120,16 +120,30 @@ stopped.
    - **uri** — the libvirt URI. Use **`qemu:///system`** (the default) so
      virtweb talks to the *system* libvirt instance, where VMs live.
      (`qemu:///session` is the per-user session and is usually empty.)
-3. **SSH access** must already work from the virtweb host as that user —
+   - **ssh key path** *(optional)* — a private key on the virtweb host
+     to use for this server. When set, only that key is offered: the
+     local ssh agent and the `~/.ssh` identity defaults are excluded.
+   - **ssh password** *(optional)* — SSH password for this server.
+     Requires `sshpass` installed on the virtweb host; the password is
+     stored in plaintext in `servers.json` (file mode 0600) and is
+     handed to ssh through a 0600 temp file (never the process list).
+3. **SSH access** must work from the virtweb host as that user — with
+   no explicit credentials that means your usual agent/config
+   (non-interactive); with a key path or password set, virtweb uses
+   exactly those. E.g. `ssh -p <port> <user>@<host> virsh -c
+   qemu:///system list` works non-interactively. virtweb uses your
+   existing key and known_hosts behaviour (new host keys are accepted
+   automatically via `accept-new`).
    e.g. `ssh -p <port> <user>@<host> virsh -c qemu:///system list` works
    non-interactively. virtweb uses your existing key and known_hosts
    behaviour (new host keys are accepted automatically via
    `accept-new`).
 
-The server list, its persisted `servers.json`, and each server's shape
-(`name`, `user`, `host`, `port`, `uri`) are what virtweb keeps — nothing
-else is stored. A server you can't reach simply shows an error on its
-page until the SSH access is fixed.
+The server list, its persisted `servers.json` (mode 0600), and each
+server's shape (`name`, `user`, `host`, `port`, `uri`, and optionally
+`identityFile`, `password`) are what virtweb keeps — nothing else is
+stored. A server you can't reach simply shows an error on its page
+until the SSH access is fixed.
 
 ## Managing VMs
 

@@ -11,6 +11,11 @@
       <input name="port" placeholder="port (22)" type="number" min="1" max="65535" value="{{if .Server.Port}}{{.Server.Port}}{{end}}">
       <input name="uri" placeholder="libvirt URI" value="{{.Server.URI}}">
     </div>
+    <div class="row">
+      <input name="identityFile" placeholder="ssh key path (optional)" value="{{.Server.IdentityFile}}">
+      <input name="password" placeholder="ssh password (optional)" type="password"{{if .Server.Password}} value="{{.Server.Password}}{{end}}>
+    </div>
+    <p class="muted small">Key path: only that key is offered (agent and ~/.ssh excluded). Password: needs <code>sshpass</code>; stored in plaintext in the data dir. Both empty: your local ssh agent/config is used.</p>
     <button type="submit">Save</button>
   </form>
 </details>

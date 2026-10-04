@@ -171,3 +171,106 @@ func TestStdHostKeyChecking(t *testing.T) {
 		t.Fatalf("override not passed through: %q", out)
 	}
 }
+
+// fakeSSHPass records its own argv (the password must not appear in
+// it), reads the -f file, records the password there, and execs the
+// real (fake) ssh.
+func fakeSSHPass(t *testing.T, argsFile, passFile, sshPath string) string {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-sshpass")
+	os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\n' "$@" > "` + argsFile + `"
+while [ "$1" != "` + sshPath + `" ]; do
+  if [ "$1" = "-f" ]; then
+    cat "$2" > "` + passFile + `"
+    shift
+  fi
+  shift
+done
+exec "` + sshPath + `" "$@"
+`), 0o755)
+	return script
+}
+
+func TestStdIdentityKey(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	ssh := &Std{SSHPath: fakeSSH(t, argsFile), Identity: "/tmp/keys/host.pem"}
+
+	out, err := ssh.Run(context.Background(), "bob", "example.com", 0, "echo hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := string(args)
+	for _, want := range []string{"-i", "/tmp/keys/host.pem", "-o", "IdentitiesOnly=yes", "BatchMode=yes"} {
+		if !strings.Contains(a, want) {
+			t.Fatalf("ssh args missing %q:\n%s", want, a)
+		}
+	}
+	if !strings.Contains(out, "echo hi") {
+		t.Fatalf("command missing: %q", out)
+	}
+}
+
+func TestStdIdentityDisablesAgent(t *testing.T) {
+	// IdentitiesOnly=yes must be passed as an -o option so the agent is
+	// never consulted, and BatchMode stays on for key-only auth.
+	argsFile := filepath.Join(t.TempDir(), "args")
+	ssh := &Std{SSHPath: fakeSSH(t, argsFile), Identity: "/tmp/k"}
+	if _, err := ssh.Run(context.Background(), "bob", "h", 0, "true"); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := os.ReadFile(argsFile)
+	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
+	// the -o IdentitiesOnly=yes pair must be present
+	found := false
+	for i, l := range lines {
+		if l == "IdentitiesOnly=yes" && i > 0 && lines[i-1] == "-o" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("IdentitiesOnly=yes option missing:\n%s", string(args))
+	}
+}
+
+func TestStdPasswordAuth(t *testing.T) {
+	dir := t.TempDir()
+	sshArgsFile := filepath.Join(dir, "ssh-args")
+	passArgsFile := filepath.Join(dir, "pass-args")
+	passFile := filepath.Join(dir, "pw")
+	// fakeSSHPass hardcodes the ssh path in its exec line, so the fake
+	// ssh must exist first.
+	sshBin := fakeSSH(t, sshArgsFile)
+	sp := fakeSSHPass(t, passArgsFile, passFile, sshBin)
+	ssh := &Std{SSHPath: sshBin, Password: "hunter2-s3cret"}
+	ssh.WithSSHPassPath(sp)
+
+	out, err := ssh.Run(context.Background(), "bob", "example.com", 0, "echo hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "echo hi") {
+		t.Fatalf("command missing: %q", out)
+	}
+	// the password reaches the ssh layer via the file, not argv
+	pw, err := os.ReadFile(passFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pw) != "hunter2-s3cret" {
+		t.Fatalf("password file = %q", pw)
+	}
+	passArgs, _ := os.ReadFile(passArgsFile)
+	if strings.Contains(string(passArgs), "hunter2-s3cret") {
+		t.Fatalf("password leaked into sshpass argv:\n%s", passArgs)
+	}
+	// BatchMode must be off for password auth
+	sshArgs, _ := os.ReadFile(sshArgsFile)
+	if strings.Contains(string(sshArgs), "BatchMode=yes") {
+		t.Fatalf("BatchMode still set for password auth:\n%s", sshArgs)
+	}
+}

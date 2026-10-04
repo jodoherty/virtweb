@@ -266,7 +266,15 @@ type backendFactory struct {
 }
 
 func (f *backendFactory) NewBackend(srv virt.Server) virt.Backend {
-	return virsh.New(srv, f.ssh)
+	// Per-server auth: the shared Std carries only the operator-level
+	// ssh policy (host-key checking); credentials are server-scoped so
+	// each backend execs ssh with that server's key/password only.
+	run := &sshexec.Std{
+		StrictHostKeyChecking: f.ssh.StrictHostKeyChecking,
+		Identity:              srv.IdentityFile,
+		Password:              srv.Password,
+	}
+	return virsh.New(srv, run)
 }
 
 // defaultDataDir returns the default location for virtweb data.

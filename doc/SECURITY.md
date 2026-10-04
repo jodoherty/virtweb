@@ -34,6 +34,15 @@ with client-cert auth at the edge, the protections below address what an
 - **SSH host-key policy** — `-host-key-checking` (default
   `accept-new`, i.e. trust-first-contact); use `no` with a seeded
   `known_hosts` on untrusted paths to a host.
+- **Per-server SSH credentials** — a server may name an `identityFile`
+  (private key path on the virtweb host) and/or a `password`. A key
+  path is offered *alone* (`-i` + `IdentitiesOnly=yes` — the ssh
+  agent and `~/.ssh` defaults are not used). A password is handed to ssh via
+  `sshpass -f <0600 temp file>` (never argv, so it is not visible in
+  the process list) and is stored in plaintext in `servers.json`
+  (mode 0600) — the trade-off of letting an authenticated UI user
+  register a host they can only reach with a password. Both empty: the
+  local ssh agent/config is used as usual.
 
 ## TLS, mTLS, and the PROXY protocol (reverse-proxy deployment)
 

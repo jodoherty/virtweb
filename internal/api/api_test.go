@@ -181,7 +181,8 @@ func TestServerCRUD(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 
 	res, err := http.Post(ts.URL+"/api/servers", "application/json",
-		jsonBody(virt.Server{Name: "alpha", User: "u", Host: "h"}))
+		jsonBody(virt.Server{Name: "alpha", User: "u", Host: "h",
+			IdentityFile: "/tmp/keys/alpha.pem", Password: "pw1"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,8 @@ func TestServerCRUD(t *testing.T) {
 	}
 	var created virt.Server
 	json.NewDecoder(res.Body).Decode(&created)
-	if created.ID == "" || created.Name != "alpha" {
+	if created.ID == "" || created.Name != "alpha" ||
+		created.IdentityFile != "/tmp/keys/alpha.pem" || created.Password != "pw1" {
 		t.Fatalf("created = %+v", created)
 	}
 
