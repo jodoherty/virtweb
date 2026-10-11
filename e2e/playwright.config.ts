@@ -11,10 +11,10 @@ import { defineConfig } from '@playwright/test';
 //   own (E2E_ENV=own) globalSetup brings up a disposable env, globalTeardown
 //                     tears it down.
 //
-// The env runs over TLS against a fixture self-signed certificate
-// (virtweb requires TLS; see e2e/src/env/certs.js). Browsers ignore
-// the certificate errors here — the Node-side helpers do the same via
-// NODE_TLS_REJECT_UNAUTHORIZED in e2e/src/envinfo.js.
+// The env runs over TLS against a self-signed certificate that
+// virtweb generates itself (-self-signed; virtweb requires TLS).
+// Browsers ignore the certificate errors here — the Node-side helpers
+// do the same via NODE_TLS_REJECT_UNAUTHORIZED in e2e/src/envinfo.js.
 const own = process.env.E2E_ENV === 'own';
 
 export default defineConfig({

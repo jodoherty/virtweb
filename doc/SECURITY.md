@@ -93,7 +93,9 @@ TCP accept  ->  PROXY header (v1/v2, outside TLS)  ->  TLS / mTLS  ->  HTTP
   and testing only).
 
 Typical flags for a behind-the-proxy deployment (TLS is always on;
-the certificate files name the served identity):
+the certificate files name the served identity — or `-self-signed
+<hosts>` has virtweb generate a self-signed certificate with SANs for
+the given hosts, development/testing only):
 
 ```sh
 ./virtweb -addr 0.0.0.0:8443 \

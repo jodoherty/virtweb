@@ -8,7 +8,6 @@ import { spawn, spawnSync } from 'node:child_process';
 import { openSync } from 'node:fs';
 import net from 'node:net';
 import { BINARY, VIRTWEB_ROOT, waitReady } from './env/virtweb.js';
-import { ensureCerts, SERVER_CERT, SERVER_KEY } from './env/certs.js';
 
 function pickPort() {
   return new Promise((resolve, reject) => {
@@ -30,7 +29,6 @@ export async function startStub({ scenario = '', flags = [] } = {}) {
     });
     if (r.status !== 0) throw new Error('go build failed');
   }
-  ensureCerts();
   const port = await pickPort();
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'virtweb-e2e-'));
   const logPath = path.join(dataDir, 'virtweb.log');
@@ -41,8 +39,7 @@ export async function startStub({ scenario = '', flags = [] } = {}) {
       '-backend', 'stub',
       '-addr', `127.0.0.1:${port}`,
       '-data-dir', dataDir,
-      '-tls-cert', SERVER_CERT,
-      '-tls-key', SERVER_KEY,
+      '-self-signed', '127.0.0.1,localhost',
       '-no-auth',
       ...flags,
     ],

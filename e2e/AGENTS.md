@@ -43,7 +43,7 @@ Manage it with the `env:*` scripts (all idempotent, non-interactive):
 
 | command | what it does |
 |---------|-------------|
-| `npm run env:up -- --backend stub\|libvirt [--proxy K]` | build virtweb, start it (always over TLS with the fixture certificate), (libvirt: build image + start container), optionally start an L4 pass-through proxy container in front of it (`--proxy haproxy-l4\|traefik-l4`, default `none`), register the `e2e` server, write the manifest. No-op if already up with the same backend+proxy. |
+| `npm run env:up -- --backend stub\|libvirt [--proxy K]` | build virtweb, start it (always over TLS, self-signed via `-self-signed`), (libvirt: build image + start container), optionally start an L4 pass-through proxy container in front of it (`--proxy haproxy-l4\|traefik-l4`, default `none`), register the `e2e` server, write the manifest. No-op if already up with the same backend+proxy. |
 | `npm run env:down [--wipe]` | stop virtweb, remove the libvirt + proxy containers, clear the manifest. `--wipe` also drops the guest-disk volume (forces re-download). |
 | `npm run env:status [--json]` | is it up? prints `url`, `pid`, `backend`, `serverId`. |
 | `npm run env:logs` | tail the last 100 lines of the virtweb log. |
@@ -100,8 +100,8 @@ Tests get `serverId` and the base URL from this (`src/envinfo.js`).
 Ports are ephemeral (chosen at `env:up`); never hardcode them.
 
 The env serves **TLS** (virtweb requires it; the session transport rides
-ALPN-negotiated h2) against a fixture self-signed certificate
-(`src/env/certs.js`, SAN `127.0.0.1`, kept in `.artifacts/certs/`).
+ALPN-negotiated h2) against a self-signed certificate that virtweb
+generates itself (`-self-signed 127.0.0.1,localhost`).
 Node-side clients disable verification in-process
 (`src/envinfo.js` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` before first
 TLS use); the browsers ignore certificate errors via

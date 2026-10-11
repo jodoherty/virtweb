@@ -40,11 +40,14 @@ Hard constraints (keep every change compliant):
   browser drives them with the native `WebSocket`. HTTP/2 extended
   CONNECT (RFC 8441) is the primary leg, the HTTP/1.1 Upgrade the
   fallback. Details: `doc/TRANSPORT.md`.
-- **TLS is always on.** virtweb serves TLS unconditionally (the
-  WebSocket transport requires it; browsers negotiate h2 over ALPN on
-  TLS listeners only). When no certificate is supplied it generates an
-  ephemeral self-signed dev certificate (loud warning) — production
-  always supplies real certificates.
+- **TLS is always on, and the server certificate is explicit.**
+  virtweb serves TLS unconditionally (the WebSocket transport requires
+  it; browsers negotiate h2 over ALPN on TLS listeners only). Exactly
+  one of `-tls-cert`/`-tls-key` (a real PEM pair) and `-self-signed
+  <hosts>` (generate a self-signed certificate with SANs for the given
+  hosts — development/testing only, loud warning) must be given;
+  neither, or both, is a configuration error. Production always
+  supplies real certificates.
 - **SSH layer:** always exec the system `ssh` (OpenSSH ≥ 9.x).
 - **`e2e/`** is a self-contained Node/Playwright project; nodejs
   artifacts stay inside it. Its own rules live in `e2e/AGENTS.md`.

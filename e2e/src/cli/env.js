@@ -30,7 +30,8 @@ import * as libvirt from '../env/libvirt.js';
 import * as proxy from '../env/proxy.js';
 
 // The env runs over TLS (virtweb requires it): this CLI's fetches
-// (registerServer, status) target the fixture certificate.
+// (registerServer, status) hit the self-signed certificate virtweb
+// generates itself.
 trustFixtureCerts();
 
 const [,, cmd, ...rest] = process.argv;

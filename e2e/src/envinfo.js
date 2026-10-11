@@ -2,7 +2,8 @@
 // custom reporter.
 import { read } from './env/manifest.js';
 
-// The env runs over TLS against a fixture certificate. Every spec
+// The env runs over TLS against the self-signed certificate virtweb
+// generates itself. Every spec
 // imports this module first (requireEnv), so disabling verification
 // here — before the spec's first fetch/WebSocket use — covers the
 // whole test process. (Browsers are covered separately by

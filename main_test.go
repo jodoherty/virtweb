@@ -159,7 +159,11 @@ func TestMtlsProxyPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, _, err := tlsConfig(f.server, f.server, f.ca)
+	cert, err := serverCert("", f.server, f.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := tlsConfig(cert, f.ca)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +268,65 @@ func TestValidateAuthFlags(t *testing.T) {
 					c.clientCA, c.noAuth, err, c.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateCertFlags(t *testing.T) {
+	cases := []struct {
+		name       string
+		selfSigned string
+		cert, key  string
+		wantErr    bool
+	}{
+		{"self-signed only", "localhost,127.0.0.1", "", "", false},
+		{"PEM pair only", "", "tls.crt", "tls.key", false},
+		{"refused: neither", "", "", "", true},
+		{"refused: both", "localhost", "tls.crt", "tls.key", true},
+		{"refused: cert without key", "", "tls.crt", "", true},
+		{"refused: key without cert", "", "", "tls.key", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateCertFlags(c.selfSigned, c.cert, c.key)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("validateCertFlags(%q, %q, %q) error = %v; want error %v",
+					c.selfSigned, c.cert, c.key, err, c.wantErr)
+			}
+		})
+	}
+}
+
+// TestSelfSignedCert: the generated certificate must verify for the
+// hosts named in the spec (DNS via the name, IPs via the IP SANs).
+func TestSelfSignedCert(t *testing.T) {
+	cert, err := selfSignedCert("virtweb.example.test, 127.0.0.1, ::1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(leaf)
+	for _, dns := range leaf.DNSNames {
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: dns}); err != nil {
+			t.Errorf("DNS verification for %q: %v", dns, err)
+		}
+	}
+	for _, ip := range leaf.IPAddresses {
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: ip.String()}); err != nil {
+			t.Errorf("IP verification for %v: %v", ip, err)
+		}
+	}
+	// Unnamed hosts must not verify.
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "elsewhere.test"}); err == nil {
+		t.Error("verification unexpectedly succeeded for an unnamed host")
+	}
+	for _, spec := range []string{"", " , ,"} {
+		if _, err := selfSignedCert(spec); err == nil {
+			t.Errorf("selfSignedCert(%q): expected an error for a spec without usable hosts", spec)
+		}
 	}
 }
 

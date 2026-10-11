@@ -28,9 +28,12 @@ never opens a direct socket to a hypervisor.
 
 virtweb always serves TLS (the session transport requires it: browsers
 negotiate HTTP/2 over ALPN on TLS listeners only, and the deployment
-model is mTLS behind an L4 pass-through). Without `-tls-cert`/`-tls-key`
-it generates an ephemeral self-signed development certificate and says
-so loudly; production always supplies real certificates. Client
+model is mTLS behind an L4 pass-through). The server certificate must
+be chosen explicitly: `-tls-cert`/`-tls-key` for a real PEM pair, or
+`-self-signed <hosts>` to have virtweb generate a self-signed
+certificate with SANs for the given hosts (development/testing only).
+Neither option, or both, is a configuration error — there is no
+silent fallback. Production always supplies real certificates. Client
 certificate authentication is the default: virtweb starts only with
 `-client-ca` (mTLS) or an explicit `-no-auth`.
 
@@ -73,8 +76,8 @@ Check either with `./virtweb -version`.
 ```sh
 # production (mTLS is the default; -client-ca is required):
 ./virtweb -addr 127.0.0.1:8080 -client-ca /etc/virtweb/client-ca.pem
-# offline demo (explicitly without client auth):
-./virtweb -backend stub -no-auth
+# offline demo (explicitly without client auth; self-signed certificate):
+./virtweb -backend stub -no-auth -self-signed localhost,127.0.0.1
 ./virtweb -version     # print the version and exit
 ```
 
@@ -84,7 +87,8 @@ Check either with `./virtweb -version`.
 | `-data-dir` | `~/.virtweb` | directory for `servers.json` (auto-created) |
 | `-backend` | `ssh` | `ssh` (production: virsh over SSH) or `stub` (offline demo/test) |
 | `-version` | — | print the version and exit |
-| `-tls-cert` / `-tls-key` | — | PEM certificate / private key. TLS is always served; when these are omitted virtweb generates an ephemeral self-signed development certificate (with a loud warning) — for production, always supply real certificates |
+| `-tls-cert` / `-tls-key` | — | PEM server certificate / private key (given together). Exactly one of `-self-signed` and `-tls-cert` must be given |
+| `-self-signed` | — | generate a self-signed server certificate with SANs for the given hosts (comma-separated DNS names and/or IPs, e.g. `localhost,127.0.0.1`). Exactly one of `-self-signed` and `-tls-cert` must be given — development/testing only; production supplies real certificates |
 | `-client-ca` | — | PEM CA bundle; enables **mTLS** (clients must present a cert signed by it). Client auth is the default: this flag, or `-no-auth`, must be given |
 | `-no-auth` | off | Run **without** client certificate authentication. An explicit opt-out — the default refuses to start without `-client-ca`, so this is how you deliberately serve unauthenticated (development / testing) |
 | `-proxy-protocol` | off | expect a PROXY protocol (v1/v2) header on each connection |
