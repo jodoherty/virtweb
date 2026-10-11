@@ -5,8 +5,10 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { openSync } from 'node:fs';
 import net from 'node:net';
 import { BINARY, VIRTWEB_ROOT, waitReady } from './env/virtweb.js';
+import { ensureCerts, SERVER_CERT, SERVER_KEY } from './env/certs.js';
 
 function pickPort() {
   return new Promise((resolve, reject) => {
@@ -20,6 +22,7 @@ function pickPort() {
 }
 
 export async function startStub({ scenario = '', flags = [] } = {}) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
   if (!existsSync(BINARY)) {
     const r = spawnSync('go', ['build', '-o', BINARY, '.'], {
       cwd: VIRTWEB_ROOT,
@@ -27,21 +30,31 @@ export async function startStub({ scenario = '', flags = [] } = {}) {
     });
     if (r.status !== 0) throw new Error('go build failed');
   }
+  ensureCerts();
   const port = await pickPort();
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'virtweb-e2e-'));
   const logPath = path.join(dataDir, 'virtweb.log');
+  const log = openSync(logPath, 'a');
   const child = spawn(
     BINARY,
-    ['-backend', 'stub', '-addr', `127.0.0.1:${port}`, '-data-dir', dataDir, ...flags],
+    [
+      '-backend', 'stub',
+      '-addr', `127.0.0.1:${port}`,
+      '-data-dir', dataDir,
+      '-tls-cert', SERVER_CERT,
+      '-tls-key', SERVER_KEY,
+      '-no-auth',
+      ...flags,
+    ],
     {
       env: { ...process.env, ...(scenario ? { STUB_SCENARIO: scenario } : {}) },
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', log, log],
       detached: true,
     },
   );
   child.unref();
 
-  const url = `http://127.0.0.1:${port}`;
+  const url = `https://127.0.0.1:${port}`;
   try {
     await waitReady(url);
   } catch (err) {

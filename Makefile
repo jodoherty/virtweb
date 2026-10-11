@@ -46,12 +46,14 @@ e2e-stub:
 e2e-libvirt:
 	cd e2e && npm run env:up -- --backend libvirt && npx playwright test --project=libvirt --project=libvirt-firefox
 
-# Reverse-proxy axis: the stub suite behind each real proxy (HAProxy and
-# Traefik, L7 and L4). Verifies the streaming responses survive real
-# L7 buffering / idle-timeout behavior; L4 pass-through is the
-# production topology. Needs podman (images pull on first use).
+# Reverse-proxy axis: the stub suite behind each real TCP (L4)
+# pass-through proxy (HAProxy and Traefik) — the production topology
+# (the proxy forwards the raw TLS stream; virtweb terminates TLS and
+# negotiates h2). Verifies the sessions survive real proxy
+# buffering/idle-timeout behavior. Needs podman (images pull on first
+# use).
 e2e-proxy:
-	@for kind in haproxy-l7 haproxy-l4 traefik-l7 traefik-l4; do 		echo "=== e2e (proxy $$kind) ==="; 		cd e2e && npm run env:down >/dev/null 2>&1; \
+	@for kind in haproxy-l4 traefik-l4; do 		echo "=== e2e (proxy $$kind) ==="; 		cd e2e && npm run env:down >/dev/null 2>&1; \
 		npm run env:up -- --backend stub --proxy $$kind && npx playwright test --project=stub \
 			|| { cd .. && exit 1; }; 	done
 	cd e2e && npm run env:down

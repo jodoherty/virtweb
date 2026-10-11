@@ -48,11 +48,12 @@ const (
 	ScenarioSSHDown     Scenario = "ssh-down"
 	ScenarioTunnelDrop  Scenario = "tunnel-drop"
 	// tunnel-fail: the tunnel dies shortly after the banner with an
-	// error (the wire-protocol-v2 SESSION_ERROR path).
+	// error (the 1011 close path; the close reason carries this
+	// message).
 	ScenarioTunnelFail Scenario = "tunnel-fail"
 	// console-fail: the console session fails right after attach with
-	// an error (the wire-protocol-v2 SESSION_ERROR path for consoles;
-	// everything else — list, start — works).
+	// an error (the 1011 close path for consoles; everything else —
+	// list, start — works).
 	ScenarioConsoleFail Scenario = "console-fail"
 )
 
@@ -675,7 +676,7 @@ func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader,
 	}
 	if b.scenario == ScenarioTunnelFail {
 		// The tunnel dies shortly after the banner with an error: the
-		// SESSION_ERROR terminal frame carries this message.
+		// 1011 close carries this message in the close reason.
 		select {
 		case <-ctx.Done():
 			return nil

@@ -5,6 +5,15 @@ import net from 'node:net';
 import { mkdirSync, openSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { E2E_ROOT, ARTIFACTS } from './manifest.js';
+import { ensureCerts, SERVER_CERT, SERVER_KEY } from './certs.js';
+
+// The env runs over TLS (virtweb requires it). Node's built-in TLS
+// verification would reject the fixture certificate, so the env's own
+// clients (waitReady, the env CLI) disable it in-process. This must
+// be set before the first TLS use in the process.
+export function trustFixtureCerts() {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
 
 export const BINARY = path.join(ARTIFACTS, 'virtweb');
 export const VIRTWEB_ROOT = path.resolve(E2E_ROOT, '..');
@@ -80,14 +89,24 @@ export function waitForExit(pid, timeoutMs = 5000) {
 }
 
 // spawn starts virtweb detached, logging to logPath. Returns the pid.
+// virtweb always serves TLS (the WebSocket transport requires it), so
+// the fixture certificate is passed on the command line.
 export function start({ port, scenario = '', backend = 'stub' }) {
   const logPath = path.join(ARTIFACTS, 'virtweb.log');
   const dataDir = path.join(ARTIFACTS, 'data');
   mkdirSync(dataDir, { recursive: true });
+  ensureCerts();
   const log = openSync(logPath, 'w');
   const child = spawn(
     BINARY,
-    ['-backend', backend, '-addr', `127.0.0.1:${port}`, '-data-dir', dataDir],
+    [
+      '-backend', backend,
+      '-addr', `127.0.0.1:${port}`,
+      '-data-dir', dataDir,
+      '-tls-cert', SERVER_CERT,
+      '-tls-key', SERVER_KEY,
+      '-no-auth',
+    ],
     {
       env: { ...process.env, ...(scenario ? { STUB_SCENARIO: scenario } : {}) },
       stdio: ['ignore', log, log],
@@ -100,6 +119,7 @@ export function start({ port, scenario = '', backend = 'stub' }) {
 
 // waitReady polls until the API answers.
 export async function waitReady(url, timeoutMs = 10000) {
+  trustFixtureCerts();
   const deadline = Date.now() + timeoutMs;
   let lastErr;
   while (Date.now() < deadline) {

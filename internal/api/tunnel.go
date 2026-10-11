@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -12,18 +14,12 @@ import (
 	"github.com/jodoherty/virtweb/internal/virt"
 )
 
-// Generic TCP tunnel over plain HTTP — the same shape as the serial
-// console (chunked flushed GET + small input POSTs, one pipeSession
-// per session, no WebSocket), but for any TCP service reachable from
-// the remote host: SPICE (5991), VNC (59xx), ...
-//
-// A stream GET opens a fresh tunnel session and returns its handle in
-// the X-Tunnel-Id response header; input POSTs reference that handle
-// (?id=<sid>). The key is the session id — NOT (server, VM, target) —
-// because a single SPICE session opens several channels (main, display,
-// inputs, cursor) that each need their own concurrent tunnel to the
-// same target. Two concurrent streams to the same target are
-// therefore both valid and get distinct ids.
+// Generic TCP tunnel over WebSocket — one session per channel (see
+// stream.go for the transport). A SPICE session opens several
+// channels (main, display, inputs, cursor, playback), each its own
+// concurrent tunnel to the same target, so several sessions per
+// (server, VM) are both valid and expected; the session registry
+// bounds the total (429 when reached).
 //
 // The client names which display it wants to view (?display=vnc|
 // spice); the server resolves the destination from the VM's live
@@ -31,21 +27,8 @@ import (
 // host:port is accepted — that would let an authenticated user point
 // the remote SSH user at an arbitrary TCP service (SSRF: port
 // scanning, cloud metadata, services on the remote host's loopback).
-// r.Context() cancels on client disconnect and is passed to the
-// backend, which kills the ssh session.
 
-// maxTunnelInputBody caps a single input POST. SPICE/VNC client→server
-// messages are small, but display-adjacent traffic (agent, clipboard)
-// can get bigger than keystrokes.
-const maxTunnelInputBody = 512 << 10
-
-var (
-	errTunnelNoID = errors.New("missing tunnel session id")
-	errBadDisplay = errors.New("invalid or missing ?display= (want vnc or spice)")
-	errNoDisplay  = errors.New("the requested display is not enabled on this VM")
-)
-
-// newTunnelID returns a random hex session handle.
+// newTunnelID returns a random hex session handle (registry key).
 func newTunnelID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
@@ -78,10 +61,19 @@ func displayTarget(srv virt.Server, vm virt.VM, display string) (string, error) 
 	}
 }
 
-// handleTunnelStream opens a new tunnel session: a chunked, flushed
-// binary response the browser consumes as a ReadableStream. The
-// session handle is delivered in the X-Tunnel-Id header so the client
-// can route its input POSTs here.
+var (
+	errBadDisplay = errors.New("invalid or missing ?display= (want vnc or spice)")
+	errNoDisplay  = errors.New("the requested display is not enabled on this VM")
+)
+
+// handleTunnelStream opens (or preflights) a tunnel session for this
+// (server, VM, display).
+//
+//   - HEAD: preflight. Validates the display and reports capacity
+//     without creating a session: 200 ok, 400/503 display problems,
+//     429 at the session cap.
+//   - GET (h1 Upgrade) / CONNECT (h2 extended CONNECT): open the
+//     session and run it to its terminal.
 func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
 	srv, b, err := a.backend(id)
@@ -104,8 +96,19 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "%v", err)
 		return
 	}
-	sid := newTunnelID()
-	s := newPipeSession()
+
+	if r.Method == http.MethodHead {
+		a.tunMu.Lock()
+		capped := len(a.tunnels) >= a.maxTunnels
+		a.tunMu.Unlock()
+		if capped {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	a.tunMu.Lock()
 	if len(a.tunnels) >= a.maxTunnels {
 		a.tunMu.Unlock()
@@ -113,102 +116,40 @@ func (a *API) handleTunnelStream(w http.ResponseWriter, r *http.Request) {
 			"too many tunnel sessions open (limit %d); try again shortly", a.maxTunnels)
 		return
 	}
+	sid := newTunnelID()
+	s := newPipeSession()
 	a.tunnels[sid] = s
 	a.tunMu.Unlock()
 	defer a.dropTunnel(sid)
 
-	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	// Reverse proxies must pass the stream through unbuffered and
-	// uncompressed (h2 or not); see AGENTS.md.
-	w.Header().Set("X-Accel-Buffering", "no")
-	// The session handle for input POSTs.
-	w.Header().Set("X-Tunnel-Id", sid)
-	w.WriteHeader(http.StatusOK)
-	// Announce the wire protocol before any tunnel bytes; the
-	// client fails fast on a non-matching stream (see frame.go). The
-	// HELLO flags byte advertises the terminal frames (protocol v2).
-	if err := writeHello(w, flusher); err != nil {
-		log.Printf("tunnel %s %s: hello: %v", name, target, err)
+	wsSess, err := a.upgrade(w, r)
+	if err != nil {
+		// The upgrader already wrote the 4xx/5xx response.
 		return
 	}
-
-	// Run the tunnel; when it ends (remote end hung up, ssh error, or
-	// the client disconnected and r.Context() cancelled it), close the
-	// pipes so the pump below terminates. If the client is still here,
-	// first tell the pump to emit the terminal frame (protocol v2):
-	// SESSION_END for a clean end, SESSION_ERROR with the server's
-	// message otherwise.
-	termCh := make(chan terminalEvent, 1)
-	go func() {
-		err := b.Tunnel(r.Context(), name, target, s.inRead, s.outWrite)
-		if r.Context().Err() == nil {
-			ev := terminalEvent{tag: frameEnd}
-			if err != nil {
-				ev.tag = frameError
-				ev.message = truncateTerminalMessage(err.Error())
-			}
-			termCh <- ev
-		}
-		s.close()
+	a.runStream(wsSess, "tunnel "+name+" "+display, func(ctx context.Context, in io.Reader, out io.Writer) error {
+		err := b.Tunnel(ctx, name, target, in, out)
 		if err != nil {
 			log.Printf("tunnel %s %s: %v", name, target, err)
 		}
-	}()
-
-	pumpDone := make(chan struct{})
-	go pumpFramed(s.outRead, w, a.keepalive, termCh, pumpDone)
-	select {
-	case <-r.Context().Done(): // client disconnected
-	case <-pumpDone: // tunnel output ended
-	}
-	s.close()
-	// The pump goroutine may still be inside Write/Flush; the response
-	// writer must not be used concurrently with the server finishing
-	// the response, so wait for it to fully drain before returning.
-	<-pumpDone
+		return err
+	}, r.Context())
 }
 
-// handleTunnelInput writes one input chunk to the tunnel session
-// named by ?id=<sid>. The body is one wire-protocol frame (usually a
-// DATA frame carrying the display bytes, or a KEEPALIVE from an idle
-// client).
-func (a *API) handleTunnelInput(w http.ResponseWriter, r *http.Request) {
-	sid := r.URL.Query().Get("id")
-	if sid == "" {
-		writeErr(w, http.StatusBadRequest, "%v: input POSTs need ?id=<session id>", errTunnelNoID)
+// handleTunnelStatus reports how many tunnel sessions are currently
+// open (all of them: the registry is global). The tunnel has no
+// per-(server, VM) exclusivity — several concurrent sessions per VM
+// are the SPICE case — so the count is the introspection the UI and
+// the e2e settle use. 200 {"open":N}; unknown server -> 404.
+func (a *API) handleTunnelStatus(w http.ResponseWriter, r *http.Request) {
+	if _, _, err := a.backend(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, "%v", err)
 		return
 	}
 	a.tunMu.Lock()
-	s := a.tunnels[sid]
+	open := len(a.tunnels)
 	a.tunMu.Unlock()
-	if s == nil {
-		writeErr(w, http.StatusNotFound, "no tunnel session %q open", sid)
-		return
-	}
-	tag, payload, err := readFrameBody(r, maxTunnelInputBody)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "input frame: %v", err)
-		return
-	}
-	switch tag {
-	case frameKeepalive:
-		// A liveness signal from an idle client; nothing to do.
-	case frameData:
-		if len(payload) == 0 {
-			writeErr(w, http.StatusBadRequest, "empty DATA frame")
-			return
-		}
-		if err := s.write(payload); err != nil {
-			writeErr(w, http.StatusNotFound, "tunnel session %q is not open", sid)
-			return
-		}
-	default:
-		writeErr(w, http.StatusBadRequest, "unexpected frame tag 0x%02x", tag)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]int{"open": open})
 }
 
 // dropTunnel removes a finished session from the registry.

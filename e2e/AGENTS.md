@@ -43,7 +43,7 @@ Manage it with the `env:*` scripts (all idempotent, non-interactive):
 
 | command | what it does |
 |---------|-------------|
-| `npm run env:up -- --backend stub\|libvirt [--proxy K]` | build virtweb, start it, (libvirt: build image + start container), optionally start a reverse-proxy container in front of it (`--proxy haproxy-l7\|haproxy-l4\|traefik-l7\|traefik-l4`, default `none`), register the `e2e` server, write the manifest. No-op if already up with the same backend+proxy. |
+| `npm run env:up -- --backend stub\|libvirt [--proxy K]` | build virtweb, start it (always over TLS with the fixture certificate), (libvirt: build image + start container), optionally start an L4 pass-through proxy container in front of it (`--proxy haproxy-l4\|traefik-l4`, default `none`), register the `e2e` server, write the manifest. No-op if already up with the same backend+proxy. |
 | `npm run env:down [--wipe]` | stop virtweb, remove the libvirt + proxy containers, clear the manifest. `--wipe` also drops the guest-disk volume (forces re-download). |
 | `npm run env:status [--json]` | is it up? prints `url`, `pid`, `backend`, `serverId`. |
 | `npm run env:logs` | tail the last 100 lines of the virtweb log. |
@@ -90,7 +90,7 @@ The single source of truth tests and agents read:
 {
   "backend": "stub | libvirt",
   "created": "<iso8601>",
-  "virtweb": { "url": "http://127.0.0.1:<port>", "pid": 0, "log": ".artifacts/virtweb.log" },
+  "virtweb": { "url": "https://127.0.0.1:<port>", "pid": 0, "log": ".artifacts/virtweb.log" },
   "sshPort": 12345,          // libvirt backend only
   "serverId": "<the 'e2e' server id>"
 }
@@ -98,6 +98,17 @@ The single source of truth tests and agents read:
 
 Tests get `serverId` and the base URL from this (`src/envinfo.js`).
 Ports are ephemeral (chosen at `env:up`); never hardcode them.
+
+The env serves **TLS** (virtweb requires it; the session transport rides
+ALPN-negotiated h2) against a fixture self-signed certificate
+(`src/env/certs.js`, SAN `127.0.0.1`, kept in `.artifacts/certs/`).
+Node-side clients disable verification in-process
+(`src/envinfo.js` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` before first
+TLS use); the browsers ignore certificate errors via
+`ignoreHTTPSErrors` in `playwright.config.ts` (Chromium additionally
+gets `--ignore-certificate-errors` at launch — the context option alone
+does not reach every connection the browser opens, and a failed
+WebSocket connection degrades the session to the h1 leg).
 
 ### Reach the tier-2 "remote host" directly (debugging)
 
@@ -130,9 +141,9 @@ one at a time):
 - `stub` / `stub-firefox` — every spec **except** `*.real.spec.ts`, on
   Chromium and Firefox. Firefox runs because it is one of the
   production browsers and it diverges from Chromium on the transport
-  (same-URL in-flight GET queueing — see `doc/TRANSPORT.md`) and on CSS
-  cursor handling; the stub tier is where those regressions are
-  cheapest to catch.
+  leg (HTTP/2 extended CONNECT vs the HTTP/1.1 Upgrade — see
+  `doc/TRANSPORT.md`) and on CSS cursor handling; the stub tier is
+  where those regressions are cheapest to catch.
 - `libvirt` / `libvirt-firefox` — **only** `*.real.spec.ts`.
 
 Spec files:
@@ -140,9 +151,9 @@ Spec files:
 | file | tier | covers |
 |------|------|--------|
 | `tests/api.spec.ts` | stub | REST: servers CRUD, ping, list, actions |
-| `tests/console-protocol.spec.ts` | stub | streaming, 409 concurrent, disconnect cleanup, input-after-close, idle KEEPALIVE, wire-protocol-v2 terminal frames, `STUB_SCENARIO` error paths |
-| `tests/transport.spec.ts` | stub | console/VNC/SPICE transport smoke over the tunnel, tunnel terminal frames, auto-retry |
-| `tests/proxy.spec.ts` | stub | reverse-proxy axis: incremental arrival of the `drip` VM's console stream through the env proxy, idle-stream survival (L7), negative control (4 s-timeout proxy must cut the stream) — the L7/L4 specs skip on `--proxy none` envs |
+| `tests/console-protocol.spec.ts` | stub | the WebSocket session transport at API level: preflight lifecycle (200/409), binary round-trip, disconnect cleanup, clean 1000 end, failed 1011 end + reason, `STUB_SCENARIO` error paths |
+| `tests/transport.spec.ts` | stub | display validation, concurrent same-target tunnels (the SPICE case), client-disconnect settle via `tunnel/status`, CSRF, and the three browser viewers over the transport (xterm, noVNC, the SPICE fork) + auto-retry |
+| `tests/proxy.spec.ts` | stub | the L4 pass-through axis: incremental arrival of the `drip` VM's console through the env proxy, idle-session survival past the proxy's 30 s timeouts, negative control (a 4 s-timeout proxy must cut the session) — the proxy specs skip on `--proxy none` envs |
 | `tests/ui.spec.ts` | stub | dashboard, add-server form, VM list, console page, start |
 | `tests/guest.real.spec.ts` | libvirt | one sequential story: lifecycle, TCG boot + real IP, real serial-console login + `echo` round-trip, VNC RFB handshake over the tunnel, shutdown |
 
@@ -153,35 +164,37 @@ the guest in a known, inspectable state.
 
 `--proxy` is orthogonal to `--backend`: the manifest URL becomes the
 proxy's URL and *every* stub spec runs through a real HAProxy/Traefik
-container (`src/env/proxy.js`, fixtures in `fixtures/proxy/` —
-`{{PROXY_PORT}}`/`{{BACKEND_PORT}}` templates rendered at env:up,
-mounted read-only into the podman container, `--network host`). The
-manifest gains `proxy: {kind, port, container, image}` and
-`backendPort` (the direct virtweb port, used by the negative-control
-spec). `src/env/proxy.js isL7(kind)` drives the adaptive deadlines in
-`playwright.config.ts` (L7 envs get a 90 s test timeout) and in
-`waitForNoSession`/`settle` (45 s settles). `make e2e-proxy` (repo
-root) loops the four kinds; the release gate includes it. Two quirks
-are handled there, not in the specs: the Traefik cold-start 404
-window (`waitProxyReady`) and the negative control's own short-lived
-proxy (`startNegativeControl`/`negativeControlDown`, container
-`vw-e2e-proxy-negctl`).
+**L4 (TCP) pass-through** container (the production topology — the
+proxy forwards the raw TLS stream; `src/env/proxy.js`, fixtures in
+`fixtures/proxy/` — `{{PROXY_PORT}}`/`{{BACKEND_PORT}}` templates
+rendered at env:up, mounted read-only into the podman container,
+`--network host`). The manifest gains `proxy: {kind, port, container,
+image}` and `backendPort` (the direct virtweb port, used by the
+negative-control spec). `make e2e-proxy` (repo root) loops the two
+kinds; the release gate includes it. Two quirks are handled there, not
+in the specs: the Traefik cold-start 404 window (`waitProxyReady`) and
+the negative control's own short-lived proxy (`startNegativeControl`/
+`negativeControlDown`, container `vw-e2e-proxy-negctl`).
 
 ## Test helpers (`src/`)
 
 - `src/envinfo.js` — `requireEnv()` (loads the manifest), `envUrl()`.
 - `src/api.js` — `Api` (fetch wrappers for the REST API).
-- `src/frames.js` — wire protocol (mirrors
-  `web/static/duplex.js` / `internal/api/frame.go`): `encodeFrame`,
-  `TAG`, `HELLO_FLAG_TERMINAL`, `FrameDecoder` (reassembly + HELLO
-  check + optional keepalive/terminal observers). The session helpers
-  below speak frames, not raw bytes, and surface terminal frames on
-  `session.terminal` ({kind: 'end'|'error', message}).
-- `src/console.js` — `openConsole()` / `ConsoleSession`: consumes the
-  console stream (DATA payloads) and records **every byte** (both
-  directions) to `test-results/` for the failing spec.
+- `src/ws.js` — `StreamSession`: a raw WebSocket session against a
+  stream endpoint (the API-level twin of `web/static/duplex.js`). It
+  does the HEAD preflight first (the browser's `WebSocket` API — and
+  Node's — does not surface the handshake status), records **every
+  byte** (both directions) to the spec's log path, and surfaces the
+  terminal close on `session.terminal` ({code, reason}: 1000 clean,
+  1011 + the server's message, 1006 transport death).
+- `src/console.js` — `openConsole()` / `ConsoleSession`: a
+  `StreamSession` on the console endpoint; `waitForNoSession()` settles
+  on the console-status endpoint.
 - `src/tunnel.js` — `openTunnel()` / `TunnelSession`: same, for the
-  generic TCP tunnel (VNC/SPICE); `chunkCount` counts DATA frames.
+  generic tunnel (VNC/SPICE); `chunkCount` counts downlink messages;
+  `tunnelOpenCount()` reads the `tunnel/status` endpoint (the settle
+  primitive — the tunnel has no per-VM exclusivity, so settles compare
+  against a baseline).
 - `src/wait.js` — `waitFor(fn, {timeout, interval})` (poll-with-deadline;
   never fixed sleeps), `sleep`.
 
@@ -194,9 +207,12 @@ When a spec fails in attach mode, the custom reporter
 (`src/cheatsheet.js`) prints the env cheat-sheet. Then:
 
 1. `npm run env:status` / `env:logs` — is virtweb alive, what did it log?
+   (The h1 warning lines say which leg a session rode; the `re-executing`
+   line confirms the h2 extended-CONNECT routing is on.)
 2. Read the failing spec's `test-results/*.console.log` — the exact
-   bytes both directions. For console failures this usually tells you
-   whether the corruption is in virtweb or the guest.
+   bytes both directions (hex + text per message). For console
+   failures this usually tells you whether the corruption is in
+   virtweb or the guest.
 3. Reach the guest directly (raw serial / `podman exec` above) to confirm
    the guest side is sane.
 4. Set a breakpoint in the spec (Playwright UI mode) and re-run just that

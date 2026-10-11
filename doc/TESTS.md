@@ -24,23 +24,25 @@ with two backend tiers:
 - **stub** — fast, offline, deterministic (the bulk of the specs).
   Runs on both Chromium and Firefox (`stub` / `stub-firefox`
   projects): Firefox is a production browser and diverges on the
-  transport and on CSS cursor handling.
+  transport leg (HTTP/2 extended CONNECT vs the HTTP/1.1 Upgrade)
+  and on CSS cursor handling.
 - **libvirt** (`@real`) — a rootless-podman libvirt container acting as
   the remote host, exercising the real ssh/virsh/transport path.
 
 A third, orthogonal axis puts the whole stub suite behind a **real
-reverse proxy** — HAProxy or Traefik, L7 (HTTP) or L4 (TCP
-pass-through) — to verify the streaming console/display responses
-survive real proxy buffering and idle-timeout behavior:
+L4 (TCP) pass-through proxy** — HAProxy or Traefik, the production
+topology — to verify the session transport survives real proxy
+buffering and idle-timeout behavior (the e2e environment is over TLS
+with a fixture certificate; the proxy forwards the raw stream):
 
 ```sh
-npm run env:up -- --backend stub --proxy haproxy-l7   # or -l4, traefik-l7/l4
+npm run env:up -- --backend stub --proxy haproxy-l4   # or traefik-l4
 npx playwright test --project=stub
 ```
 
-(`make e2e-proxy` loops all four; `e2e/tests/proxy.spec.ts` carries the
-proxy-specific assertions, including a negative control that proves the
-idle-survival check is not vacuous.)
+(`make e2e-proxy` loops both; `e2e/tests/proxy.spec.ts` carries the
+proxy-specific assertions, including a negative control that proves
+the idle-survival check is not vacuous.)
 
 Run and debug the suite (commands, the manifest, attach vs own,
 raw-serial access): **`e2e/AGENTS.md`**.
@@ -52,13 +54,13 @@ a single command:
 
 ```sh
 make check     # always run: go vet + unit tests + the fast (stub) e2e tier
-make release   # before a release: `check` + the real libvirt tier + all four
-               # reverse-proxy tiers (HAProxy/Traefik, L7 and L4)
+make release   # before a release: `check` + the real libvirt tier + the
+               # reverse-proxy tiers (HAProxy and Traefik, L4 pass-through)
 ```
 
 `make dist` produces the deployable `dist/virtweb-linux-amd64` binary.
 **Stub-green is not release-green** — the real libvirt tier and the
 proxy tiers must actually run before a release. The real (libvirt) tier
-needs podman + gcc and is slow (TCG boot); the proxy tiers need podman
-and pull small images on first use — so run `make release` rather than
-on every build.
+needs podman + gcc + /dev/kvm and is slow (TCG boot); the proxy tiers
+need podman and pull small images on first use — so run `make release`
+rather than on every build.

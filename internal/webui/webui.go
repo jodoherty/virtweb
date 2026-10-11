@@ -181,8 +181,9 @@ type page struct {
 	Running bool
 	// XML is the domain XML shown on the VM detail page (virsh dumpxml).
 	XML string
-	// CfgJSON is the console page's {streamUrl, inputUrl} config, JSON
-	// produced by json.Marshal over PathEscaped URLs. Marked template.JS
+	// CfgJSON is the viewer page's config (the session's streamUrl,
+	// JSON produced by json.Marshal over PathEscaped URLs). Marked
+	// template.JS
 	// so it is emitted raw inside the <script> (no re-escaping into a JS
 	// string literal); no unescaped user input reaches it.
 	CfgJSON template.JS
@@ -410,7 +411,6 @@ func (u *UI) handleConsolePage(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, _ := json.Marshal(map[string]string{
 		"streamUrl": "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/console/stream",
-		"inputUrl":  "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/console/input",
 	})
 	u.render(w, page{
 		Page:    "console",
@@ -435,14 +435,13 @@ func (u *UI) handleVNCPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	cfg := map[string]any{"streamUrl": "", "inputUrl": "", "password": ""}
+	cfg := map[string]any{"streamUrl": "", "password": ""}
 	if vm.VNCPort > 0 {
 		base := "/api/servers/" + id + "/vms/" + url.PathEscape(name) + "/tunnel"
 		// The destination (srv.Host:port) is resolved server-side from
 		// this VM's live VNC port; the client only names the display.
 		q := "?display=vnc"
 		cfg["streamUrl"] = base + "/stream" + q
-		cfg["inputUrl"] = base + "/input" + q
 	} else {
 		cfg["reason"] = "VNC is not enabled on this VM (no VNC port reported)."
 	}

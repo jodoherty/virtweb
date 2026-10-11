@@ -482,7 +482,7 @@ func TestConsolePageRunningAndShutOff(t *testing.T) {
 	}
 	b := body(w)
 	if !strings.Contains(b, `<div id="term">`) ||
-		!strings.Contains(b, `/console/stream`) || !strings.Contains(b, `/console/input`) {
+		!strings.Contains(b, `/console/stream`) {
 		t.Fatalf("running console page wrong: %s", b)
 	}
 	w = doGet(t, ui.Routes(), "/servers/"+s.ID+"/vms/win10/console")

@@ -1,60 +1,118 @@
-# Transport wire format (v1 + v2)
+# The session transport
 
-The protocol spoken by the console and display streams. Usage:
-[USAGE.md](USAGE.md). Deployment (proxy buffering/idle timeouts):
+The protocol spoken by the serial console and the display tunnels
+(VNC/SPICE). Usage: [USAGE.md](USAGE.md). Deployment (proxy timeouts,
+L4 pass-through): [SECURITY.md](SECURITY.md#reverse-proxy-notes).
+
+## What it is
+
+One **WebSocket session** per logical stream — a serial console, or
+one display channel (a SPICE session opens several: main, display,
+inputs, cursor, playback). Each session is the same URL for its whole
+lifetime; the browser's native `WebSocket` is the entire client
+implementation. Binary messages carry the session's raw bytes in both
+directions (console output / keystrokes; RFB; SPICE per channel).
+Nothing is multiplexed above the transport — if h2 transport-level
+multiplexing is needed, that is what it is for.
+
+There is no custom framing and no application protocol on top of the
+bytes. Terminal state rides the WebSocket close code:
+
+| close | meaning | UI |
+|-------|---------|-----|
+| `1000` | the session ended cleanly (VM stopped, console detached, remote hang-up) | "Session ended." + Reconnect |
+| `1011` | the session failed server-side; the close **reason** carries the server's message (the ssh/virsh error; bounded on the wire to 123 bytes, the full message stays in the server log) | "Connection lost: <message>" + auto-retry |
+| `1006` | transport death (proxy cut, backend restart, keepalive timeout) | "Connection lost" + auto-retry |
+
+When the *client* goes away, no terminal close is sent — the client is
+gone and the transport dying is itself the signal; the server kills
+the backend session through its pipes.
+
+## Preflight
+
+The browser's `WebSocket` API (and Node's) does not surface the
+handshake status, so the server's pre-upgrade rejections —
+`409` (a console session for this VM is already open), `429` (session
+cap), `400` (bad `?display=`), `503` (the VM has no such display),
+`404` (unknown server) — are read with a `HEAD` to the same URL before
+the handshake. A `200` preflight means the session may open; the
+handshake itself can still race (e.g. another session takes the slot
+between the two).
+
+## The two legs
+
+Browsers negotiate HTTP/2 over ALPN on the TLS listener, so all of a
+tab's sessions ride **one h2 connection** as extended-CONNECT streams
+(RFC 8441) — one stream per session, no per-origin connection-budget
+pressure, transport-level keepalive. Tooling (curl-adjacent clients,
+the e2e harness) and h2-less browsers use the plain **HTTP/1.1
+Upgrade** leg; it is a supported fallback, not a degradation.
+
+### Extended CONNECT and the Go toolchain
+
+Go's stdlib HTTP/2 server does not route extended CONNECT by default —
+it is gated behind `GODEBUG=http2xconnect=1`, read once at process
+start. h2 is the designed primary path, so the binary guarantees its
+own invariant: at startup `virtweb` re-executes itself once with the
+setting appended to `GODEBUG` (see
+`ensureExtendedConnect` in `main.go`). The startup log says so.
+
+### The h1 warning
+
+A session that lands on the HTTP/1.1 leg instead of HTTP/2 is logged
+with a verbose, throttled warning (per client — the mTLS certificate
+CN when mTLS is on, else the peer address; repeated occurrences
+suppressed for five minutes and reported on the next warning). A
+browser session on h1 means ALPN was not negotiated (client
+configuration or a middlebox), which changes the session's liveness
+semantics and makes it count against the client's per-origin
+connection budget. The page shows it as a `· h1` marker next to the
+status. If this warning appears for browser traffic in production,
+check ALPN end to end.
+
+## Liveness
+
+- **HTTP/1.1 leg:** the vendored `ws` package probes a silent session
+  with a ping once the idle window is reached and considers the
+  connection dead after a second window. The window is `-keepalive`
+  (default 15 s). The browser answers pings automatically — there are
+  no client-side keepalive timers (and nothing is throttled in hidden
+  tabs).
+- **HTTP/2 leg:** h2 streams expose no per-stream deadline, so the
+  extended-CONNECT session runs with both deadline windows zero (the
+  package refuses a nonzero window there). Liveness is the
+  transport's job: the browser's h2 PINGs keep the connection busy,
+  and the reverse proxy's idle timeout is a documented deployment
+  constraint (a proxy that cuts an idle h2 connection cuts the
+  sessions on it — the client re-establishes them; that is the
+  designed behaviour, not an error).
+
+A severed session is always re-establishable by the client; the
+console page retries a failed or lost session automatically (a
+bounded number of reloads — `web/static/retry.js`), and every page
+offers Reconnect for clean ends.
+
+## Why WebSocket
+
+The former plain-HTTP transport (a chunked GET downlink plus small
+ordered POSTs uplink, with a custom length-framed protocol for
+keepalives, terminal state and corruption detection) is gone.
+WebSocket is strictly simpler and more responsive:
+
+- **Simplicity:** the framing, keepalive, close-handshake and
+  terminal-state machinery is RFC 6455 — a stdlib-only vendored file
+  plus `new WebSocket()` in the browser, instead of bespoke Go,
+  bespoke browser code, and a wire-protocol document.
+- **Responsiveness:** uplink bytes go straight out as frames. The old
+  transport paid a per-chunk POST round-trip on the keystroke path
+  (visible on serial consoles and the SPICE input channel).
+- **Robustness:** close semantics are standard (the close code *is*
+  the terminal state), frame integrity is the RFC's, and h2 gives the
+  browser's many sessions one connection instead of N connections
+  fighting the per-origin budget.
+
+The one behaviour the custom framing provided that had no RFC
+equivalent — proxy-surviving idle keepalives — now comes from the
+ws package's in-library pings (h1 leg) and the browser's h2 PINGs
+(h2 leg), documented under [Liveness](#liveness) and
 [SECURITY.md](SECURITY.md#reverse-proxy-notes).
-
-The console and display streams are not raw byte pipes: both
-directions speak a small length-framed protocol, one frame per flush:
-
-```
-frame := [tag:1][len:4 big-endian][payload]
-```
-
-| tag | name | use |
-|-----|------|-----|
-| `0x01` | HELLO | first frame of every downlink stream; payload `[version=1][flags]`, where bit 0 of `flags` announces the v2 terminal frames. Clients refuse non-matching streams |
-| `0x02` | DATA | the session's raw bytes (console output/keystrokes, RFB, SPICE per channel). Each uplink POST body is one DATA frame |
-| `0x03` | KEEPALIVE | empty; emitted by *each direction* while it has been idle for the keepalive interval |
-| `0x04` | SESSION_END | **v2**, downlink only; the session ended cleanly. Empty payload. Always the last frame before the stream closes |
-| `0x05` | SESSION_ERROR | **v2**, downlink only; the session failed. Payload is the server's message (e.g. the ssh/virsh error). Always the last frame |
-
-Why frames exist, given virtweb is an opaque byte tunnel:
-
-- **Idle keepalives survive any proxy topology.** An idle serial
-  console or a static display is byte-silent; a TCP reverse proxy with
-  its own read/idle timeouts would cut it. Each stream pings itself
-  (server pings the downlink, the browser pings the uplink), so no
-  stream can go quiet for longer than ~2× the interval — under L4/h2,
-  L7, or h1.1. The keepalive *cannot* live in the guest protocol
-  (RFB/SPICE/pty) because virtweb doesn't parse it; it lives one layer
-  up, in frames the tunnel itself emits.
-- **Corruption is detectable.** Without framing, a byte dropped
-  mid-stream desyncs a VNC/SPICE session silently; a torn or over-size
-  frame fails the channel cleanly ("connection lost" + Reconnect)
-  instead.
-- **Terminal state is in-band (v2).** The session's final state
-  arrives as a frame before the stream ends: the UI can show *why* a
-  session died (the ssh/virsh error, verbatim) instead of guessing from
-  how the stream did. The version stays at 1 — the frame shape and
-  HELLO/DATA are unchanged; v2 is a capability bit, not a new version.
-  (In-band client→server terminal frames are the planned v3 extension,
-  announced the same way.)
-
-The browser parses the frames in `web/static/duplex.js`
-(`FrameDecoder`); the consumers (xterm, noVNC, the SPICE fork) only see
-DATA payloads. A session that ends with SESSION_ERROR surfaces as
-"Connection lost: <message>"; a clean SESSION_END as "Session ended.".
-When the *client* goes away, no terminal frame is emitted — the client
-is gone, and the stream abort is itself the signal.
-
-## A Firefox quirk: one URL, one in-flight GET
-
-Firefox (observed: 155) queues a second in-flight GET to the *exact
-same URL* behind the first — it stays pending indefinitely, while
-Chrome opens both. SPICE child channels would all fetch the master's
-stream URL, so on Firefox only the master channel ever started
-("Connected." with a blank display). `DuplexChannel` therefore gives
-every channel a unique stream URL (an opaque `s=` parameter the
-server ignores); each GET opens a fresh session anyway, so the
-distinct URLs are semantically correct, not just a workaround.

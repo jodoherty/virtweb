@@ -1,239 +1,179 @@
 package api
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jodoherty/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/ws"
 )
 
-// openTunnelStream opens a tunnel stream and returns the response plus
-// its session id (X-Tunnel-Id).
-func openTunnelStream(t *testing.T, client *http.Client, streamURL string) (*http.Response, string) {
+// tunnelURL is the tunnel stream URL for (server id, VM, display).
+func tunnelURL(t *testing.T, base, id, name, display string) string {
 	t.Helper()
-	res, err := client.Get(streamURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("stream status = %d, want 200", res.StatusCode)
-	}
-	sid := res.Header.Get("X-Tunnel-Id")
-	if sid == "" {
-		t.Fatalf("stream response missing X-Tunnel-Id header")
-	}
-	return res, sid
+	return base + fmt.Sprintf("/api/servers/%s/vms/%s/tunnel/stream?display=%s", id, name, display)
 }
 
+// readUntil reads binary messages until one carries want (or the
+// bound is hit) and returns the concatenation of everything read.
+// The tunnel backend's banner arrives in spaced chunks, so an echo
+// assertion has to read past it rather than assume message boundaries.
+func readUntil(t *testing.T, s *ws.Session, want string) string {
+	t.Helper()
+	var got []byte
+	for i := 0; i < 64; i++ {
+		_, data, err := s.ReadMessage()
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		got = append(got, data...)
+		if strings.Contains(string(got), want) {
+			return string(got)
+		}
+	}
+	t.Fatalf("did not observe %q within 64 messages", want)
+	return ""
+}
+
+// TestTunnelStreamRoundTrip: dial the VNC tunnel, bytes round-trip
+// through the echo backend, and the session closes cleanly.
 func TestTunnelStreamRoundTrip(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
-	client := &http.Client{}
-	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=spice", id)
-	inputURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/input", id)
 
-	res, sid := openTunnelStream(t, client, streamURL)
-	if res.Header.Get("X-Accel-Buffering") != "no" {
-		t.Fatalf("X-Accel-Buffering = %q, want no", res.Header.Get("X-Accel-Buffering"))
-	}
-	if res.Header.Get("Cache-Control") != "no-cache" {
-		t.Fatalf("Cache-Control = %q, want no-cache", res.Header.Get("Cache-Control"))
-	}
-
-	out := make(chan []byte, 1)
-	go func() {
-		buf, err := io.ReadAll(res.Body)
-		if err != nil && len(buf) == 0 {
-			t.Errorf("read stream: %v", err)
-		}
-		out <- buf
-	}()
-
-	// Input is routed by session id (as a DATA frame) and echoes back
-	// through the tunnel.
-	inRes, err := client.Post(inputURL+"?id="+sid,
-		"application/octet-stream",
-		bytes.NewReader(encodeTestFrame(t, frameData, []byte("hello"))))
-	if err != nil {
+	s := dialStream(t, tunnelURL(t, ts.URL, id, "vm1", "vnc"))
+	if err := s.WriteBinary([]byte("rfb-head")); err != nil {
 		t.Fatal(err)
 	}
-	if inRes.StatusCode != http.StatusNoContent {
-		t.Fatalf("input status = %d", inRes.StatusCode)
+	got := readUntil(t, s, "rfb-head")
+	if !strings.Contains(got, "stub-tunnel:") {
+		t.Fatalf("stream = %q, want the session banner before the echo", got)
 	}
-
-	// Closing the client stream disconnects the request, which cancels
-	// the backend context and ends the session.
-	res.Body.Close()
-	buf := <-out
-	frames, rest, ferr := framesFrom(buf)
-	if ferr != nil {
-		t.Fatal(ferr)
+	if err := s.Shutdown(1000, ""); err != nil {
+		t.Fatal(err)
 	}
-	if len(rest) != 0 || len(frames) < 2 {
-		t.Fatalf("streamed frames = %+v rest=%d, want HELLO + DATA", frames, len(rest))
+	if _, _, err := s.ReadMessage(); !errors.Is(err, io.EOF) {
+		t.Fatalf("clean-end read = %v, want io.EOF", err)
 	}
-	// The fake tunnel writes several chunks; each becomes its own DATA
-	// frame. Concatenate the payloads.
-	var got strings.Builder
-	for _, fr := range frames {
-		if fr.tag == frameData {
-			got.Write(fr.payload)
-		}
-	}
-	// The destination is resolved server-side: vm1's SPICE display is
-	// 127.0.0.1:5991 in the fake backend.
-	want := "stub-tunnel: vm1 127.0.0.1:5991\nchunk 1\nchunk 2\nhello"
-	if frames[0].tag != frameHello || got.String() != want {
-		t.Fatalf("streamed = HELLO:%v payload %q, want %q", frames[0], got.String(), want)
-	}
+	s.Close()
 }
 
-// TestTunnelStreamTerminalError: a tunnel that fails server-side
-// (ssh refused, target gone) ends with a SESSION_ERROR frame carrying
-// the server's message; a tunnel whose remote end hangs up ends with
-// SESSION_END. The client gets the WHY, not just a dead stream.
-func TestTunnelStreamTerminalError(t *testing.T) {
-	ts, ff, _ := newTestAPI(t)
-	id := addTestServer(t, ts)
-	client := &http.Client{}
-	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=vnc", id)
-
-	// Pre-seed the factory (the backend is materialized lazily on
-	// first use).
-	ff.byID[id] = &fakeBackend{
-		vms:       []virt.VM{{Name: "vm1", State: "running", Running: true}},
-		tunnelErr: errors.New("ssh: connect to host h port 5900: connection refused"),
-	}
-	res, _ := openTunnelStream(t, client, streamURL)
-	buf, rerr := io.ReadAll(res.Body)
-	if rerr != nil {
-		t.Fatalf("read stream: %v", rerr)
-	}
-	frames, rest, ferr := framesFrom(buf)
-	if ferr != nil || len(rest) != 0 {
-		t.Fatalf("frames = %+v rest=%d err=%v", frames, len(rest), ferr)
-	}
-	if len(frames) != 2 || frames[0].tag != frameHello {
-		t.Fatalf("frames = %+v, want HELLO + terminal", frames)
-	}
-	if frames[1].tag != frameError ||
-		string(frames[1].payload) != "ssh: connect to host h port 5900: connection refused" {
-		t.Fatalf("terminal frame = %+v, want SESSION_ERROR with the message", frames[1])
-	}
-}
-
-func TestTunnelStreamTerminalCleanEnd(t *testing.T) {
-	ts, ff, _ := newTestAPI(t)
-	id := addTestServer(t, ts)
-	client := &http.Client{}
-	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=vnc", id)
-
-	ff.byID[id] = &fakeBackend{
-		vms:         []virt.VM{{Name: "vm1", State: "running", Running: true}},
-		tunnelClean: true,
-	}
-	res, _ := openTunnelStream(t, client, streamURL)
-	buf, rerr := io.ReadAll(res.Body)
-	if rerr != nil {
-		t.Fatalf("read stream: %v", rerr)
-	}
-	frames, rest, ferr := framesFrom(buf)
-	if ferr != nil || len(rest) != 0 || len(frames) != 3 {
-		t.Fatalf("frames = %+v rest=%d err=%v, want HELLO + DATA + SESSION_END", frames, len(rest), ferr)
-	}
-	if frames[1].tag != frameData || string(frames[1].payload) != "stub-tunnel: vm1\n" {
-		t.Fatalf("data frame = %+v", frames[1])
-	}
-	if frames[2].tag != frameEnd || len(frames[2].payload) != 0 {
-		t.Fatalf("terminal frame = %+v, want SESSION_END (empty)", frames[2])
-	}
-}
-
-// A single SPICE session opens several channels that each need their
-// own concurrent tunnel to the same target; both must succeed with
-// distinct session ids.
+// TestTunnelConcurrentSameTarget: several concurrent sessions to the
+// same target are valid and independent (a SPICE session opens one
+// tunnel per channel). The two sessions' bytes never cross.
 func TestTunnelConcurrentSameTarget(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
-	client := &http.Client{}
-	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/stream?display=spice", id)
+	url := tunnelURL(t, ts.URL, id, "vm1", "spice")
 
-	a, sidA := openTunnelStream(t, client, streamURL)
-	b, sidB := openTunnelStream(t, client, streamURL)
-	if sidA == sidB {
-		t.Fatalf("concurrent same-target tunnels got the same id %q", sidA)
+	a := dialStream(t, url)
+	defer a.Close()
+	b := dialStream(t, url)
+	defer b.Close()
+
+	if err := a.WriteBinary([]byte("A")); err != nil {
+		t.Fatal(err)
 	}
-	a.Body.Close()
-	b.Body.Close()
+	if err := b.WriteBinary([]byte("B")); err != nil {
+		t.Fatal(err)
+	}
+	if got := readUntil(t, a, "A"); !strings.Contains(got, "A") {
+		t.Fatalf("session A stream = %q, want its echo", got)
+	}
+	if got := readUntil(t, b, "B"); !strings.Contains(got, "B") {
+		t.Fatalf("session B stream = %q, want its echo", got)
+	}
 }
 
+// TestTunnelStreamTerminalError: a session that fails server-side ends
+// with closeSessionError and the server's message.
+func TestTunnelStreamTerminalError(t *testing.T) {
+	ts, ff, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	ff.byID[id] = &fakeBackend{
+		vms:       []virt.VM{{Name: "vm1", Running: true, VNCPort: 5900}},
+		tunnelErr: errors.New("connection refused"),
+	}
+
+	s := dialStream(t, tunnelURL(t, ts.URL, id, "vm1", "vnc"))
+	_, _, err := s.ReadMessage()
+	var closeErr *ws.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("terminal read = %v, want *ws.CloseError", err)
+	}
+	if closeErr.Code != closeSessionError || closeErr.Reason != "connection refused" {
+		t.Fatalf("terminal = %d %q, want %d with the message", closeErr.Code, closeErr.Reason, closeSessionError)
+	}
+	s.Close()
+}
+
+// TestTunnelStreamTerminalCleanEnd: a session that ends cleanly
+// delivers its final output, then closes with 1000.
+func TestTunnelStreamTerminalCleanEnd(t *testing.T) {
+	ts, ff, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	ff.byID[id] = &fakeBackend{
+		vms:         []virt.VM{{Name: "vm1", Running: true, VNCPort: 5900}},
+		tunnelClean: true,
+	}
+
+	s := dialStream(t, tunnelURL(t, ts.URL, id, "vm1", "vnc"))
+	op, data, err := s.ReadMessage()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if op != ws.OpBinary || string(data) != "stub-tunnel: vm1\n" {
+		t.Fatalf("data = %q (op %d), want the tunnel banner", data, op)
+	}
+	if _, _, err = s.ReadMessage(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal read = %v, want io.EOF (clean 1000 end)", err)
+	}
+	s.Close()
+}
+
+// TestTunnelDisplayValidation: the display is resolved server-side; a
+// bogus or missing display and a VM with no display are pre-upgrade
+// rejections (the dial fails).
 func TestTunnelDisplayValidation(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
-	stream := func(name, q string) int {
-		res, err := http.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/%s/tunnel/stream%s", id, name, q))
-		if err != nil {
-			t.Fatal(err)
-		}
-		res.Body.Close()
-		return res.StatusCode
-	}
-
-	// Missing or invalid display -> 400.
-	for _, q := range []string{"", "?display=bogus", "?display="} {
-		if got := stream("vm1", q); got != http.StatusBadRequest {
-			t.Fatalf("stream %q status = %d, want 400", q, got)
+	dial := func(name, display string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := ws.Dial(ctx, wsURL(tunnelURL(t, ts.URL, id, name, display)))
+		if err == nil {
+			t.Fatalf("tunnel %s display=%q dialed, want a rejection", name, display)
 		}
 	}
-
-	// A client-supplied ?target= is ignored; only ?display= is honoured.
-	// (vm1's spice display resolves to 127.0.0.1:5991, not the target.)
-	if got := stream("vm1", "?display=spice&target=1.2.3.4:9999"); got != http.StatusOK {
-		t.Fatalf("stream with ignored target status = %d, want 200", got)
+	dial("vm1", "bogus") // 400
+	dial("vm2", "vnc")   // vm2 has no display: 503
+	dial("vm2", "spice")
+	// The preflight surfaces the same statuses without opening a session.
+	if code := preflight(t, tunnelURL(t, ts.URL, id, "vm1", "bogus")); code != http.StatusBadRequest {
+		t.Fatalf("preflight bogus display = %d, want 400", code)
 	}
-
-	// Both displays resolve on vm1.
-	if got := stream("vm1", "?display=vnc"); got != http.StatusOK {
-		t.Fatalf("stream ?display=vnc status = %d, want 200", got)
+	if code := preflight(t, tunnelURL(t, ts.URL, id, "vm2", "vnc")); code != http.StatusServiceUnavailable {
+		t.Fatalf("preflight missing display = %d, want 503", code)
 	}
-	if got := stream("vm1", "?display=spice"); got != http.StatusOK {
-		t.Fatalf("stream ?display=spice status = %d, want 200", got)
-	}
-
-	// A VM with no such display -> 503 (the requested display is not
-	// enabled).
-	if got := stream("vm2", "?display=spice"); got != http.StatusServiceUnavailable {
-		t.Fatalf("stream vm2 ?display=spice status = %d, want 503", got)
+	if code := preflight(t, tunnelURL(t, ts.URL, id, "vm1", "vnc")); code != http.StatusOK {
+		t.Fatalf("preflight ok display = %d, want 200", code)
 	}
 }
 
-func TestTunnelInputRouting(t *testing.T) {
+// TestTunnelStreamUnknownServer: dialing a tunnel for a server that
+// does not exist fails (404 pre-upgrade).
+func TestTunnelStreamUnknownServer(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
-	id := addTestServer(t, ts)
-	inputURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/tunnel/input", id)
-
-	// Missing ?id= -> 400.
-	res, err := http.Post(inputURL, "application/octet-stream", strings.NewReader("x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("input without id status = %d, want 400", res.StatusCode)
-	}
-
-	// Unknown id -> 404.
-	res, err = http.Post(inputURL+"?id=nope", "application/octet-stream", strings.NewReader("x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("input with unknown id status = %d, want 404", res.StatusCode)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := ws.Dial(ctx, wsURL(tunnelURL(t, ts.URL, "nope", "vm1", "vnc"))); err == nil {
+		t.Fatal("tunnel dial for an unknown server succeeded, want a 404 rejection")
 	}
 }

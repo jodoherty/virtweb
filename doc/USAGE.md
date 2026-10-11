@@ -17,12 +17,22 @@ never opens a direct socket to a hypervisor.
 - Add/remove libvirt servers (each reached over SSH)
 - View and manage virtual machines: start, shutdown, reboot, destroy
 - Use a VM:
-  - **serial console** (xterm.js) over the HTTP stream transport
+  - **serial console** (xterm.js) over the WebSocket session transport
   - **VNC** (noVNC fork) over the same transport
   - **SPICE** (spice-html5 fork) over the same transport
-- No WebSocket anywhere: the transport is a chunked, flushed GET (browser
-  `ReadableStream`) for server→client bytes plus small, ordered POSTs for
-  client→server bytes, one session per (server, VM).
+- The transport is one WebSocket session per logical stream — a serial
+  console, or one display channel (a SPICE session opens several):
+  binary messages both ways, terminal state in the close code, HTTP/2
+  extended CONNECT for browsers, HTTP/1.1 Upgrade for tooling. See
+  [TRANSPORT.md](TRANSPORT.md).
+
+virtweb always serves TLS (the session transport requires it: browsers
+negotiate HTTP/2 over ALPN on TLS listeners only, and the deployment
+model is mTLS behind an L4 pass-through). Without `-tls-cert`/`-tls-key`
+it generates an ephemeral self-signed development certificate and says
+so loudly; production always supplies real certificates. Client
+certificate authentication is the default: virtweb starts only with
+`-client-ca` (mTLS) or an explicit `-no-auth`.
 
 ## Tech stack
 
@@ -61,7 +71,10 @@ Check either with `./virtweb -version`.
 ## Run
 
 ```sh
-./virtweb [-addr 127.0.0.1:8080] [-data-dir ~/.virtweb] [-backend ssh|stub]
+# production (mTLS is the default; -client-ca is required):
+./virtweb -addr 127.0.0.1:8080 -client-ca /etc/virtweb/client-ca.pem
+# offline demo (explicitly without client auth):
+./virtweb -backend stub -no-auth
 ./virtweb -version     # print the version and exit
 ```
 
@@ -71,18 +84,21 @@ Check either with `./virtweb -version`.
 | `-data-dir` | `~/.virtweb` | directory for `servers.json` (auto-created) |
 | `-backend` | `ssh` | `ssh` (production: virsh over SSH) or `stub` (offline demo/test) |
 | `-version` | — | print the version and exit |
-| `-tls` | off | serve HTTPS (requires `-tls-cert` and `-tls-key`) |
-| `-tls-cert` / `-tls-key` | — | PEM certificate / private key for `-tls` |
-| `-client-ca` | — | PEM CA bundle; with `-tls` enables **mTLS** (clients must present a cert signed by it) |
+| `-tls-cert` / `-tls-key` | — | PEM certificate / private key. TLS is always served; when these are omitted virtweb generates an ephemeral self-signed development certificate (with a loud warning) — for production, always supply real certificates |
+| `-client-ca` | — | PEM CA bundle; enables **mTLS** (clients must present a cert signed by it). Client auth is the default: this flag, or `-no-auth`, must be given |
+| `-no-auth` | off | Run **without** client certificate authentication. An explicit opt-out — the default refuses to start without `-client-ca`, so this is how you deliberately serve unauthenticated (development / testing) |
 | `-proxy-protocol` | off | expect a PROXY protocol (v1/v2) header on each connection |
 | `-proxy-from` | — | with `-proxy-protocol`: comma-separated proxy source IPs/CIDRs; any other source is rejected |
 | `-host-key-checking` | `accept-new` | ssh `StrictHostKeyChecking`: `accept-new` (trust first contact, verify afterwards), `yes`, `no` (known_hosts only), or `off` |
-| `-keepalive` | `15s` | stream idle keepalive: after this much silence a console/tunnel stream emits a keepalive frame (0 disables). Keep it well under your reverse proxy's idle/read timeout |
+| `-keepalive` | `15s` | keepalive window for sessions on the HTTP/1.1 leg: a silent session is probed with a ping after this much silence (0 disables). Keep it well under your reverse proxy's idle/read timeout. HTTP/2 sessions run with the window zero (h2 streams cannot enforce deadlines); liveness there is the transport's job (see [TRANSPORT.md](TRANSPORT.md#liveness)) |
 
 The server binds to `127.0.0.1` by default. To use it from another
-machine, run it behind a reverse proxy (or listen on a non-loopback
-addr) — the console/VNC/SPICE streams must reach the browser
-**unbuffered**; see [SECURITY.md](SECURITY.md#reverse-proxy-notes).
+machine, run it behind an L4 (TCP) pass-through proxy (or listen on a
+non-loopback addr); see [SECURITY.md](SECURITY.md#reverse-proxy-notes).
+
+Note: virtweb re-executes itself once at startup to enable the Go
+stdlib's HTTP/2 extended-CONNECT routing (`GODEBUG=http2xconnect=1`) —
+the startup log line says so; it needs no operator action.
 
 ## Requirements
 
@@ -197,9 +213,15 @@ DELETE /api/servers/{id}/vms/{name}         undefine domain
 GET    /api/servers/{id}/vms/{name}/xml     current domain XML (dumpxml)
 GET    /api/servers/{id}/vms/{name}/console/status   {"open":bool}
 POST   /api/servers/{id}/vms/{name}/{start|shutdown|destroy|reboot}
-GET    /api/servers/{id}/vms/{name}/console/stream   (+POST .../console/input)
-GET    /api/servers/{id}/vms/{name}/tunnel?display=vnc|spice
-       (+POST .../tunnel?id=<sid>&dir=data|input)
+GET    /api/servers/{id}/vms/{name}/tunnel/status    {"open":N} (all open tunnel sessions)
+
+# Session endpoints (WebSocket; GET is the HTTP/1.1 Upgrade leg, CONNECT
+# the HTTP/2 extended-CONNECT leg — the browser picks via ALPN). A HEAD
+# to the same URL is the preflight: pre-upgrade status without opening
+# a session (200 openable / 409 in use / 429 capped / 400, 503 display
+# problems / 404 unknown server).
+GET      /api/servers/{id}/vms/{name}/console/stream
+GET|CONNECT  /api/servers/{id}/vms/{name}/tunnel/stream?display=vnc|spice
 ```
 
 ### Console / VNC / SPICE
@@ -217,30 +239,29 @@ the remote display.
 
 - **Console** — the serial console (`ssh -tt` → `virsh console`). The
   page reports a distinct status for every terminal state: *Connected*,
-  *Session ended*, *Connection lost* (with the server's reason when the
-  session failed — wire protocol v2), *Connection timed out*, *A
-  session is already open*, *Could not connect* — and offers a
-  **Reconnect** button once the session is no longer live. One console
-  session per (server, VM); a second concurrent open is refused (409),
-  and the VM detail page shows the console as *open* while one is live.
+  *Session ended* (a clean 1000 close), *Connection lost* (with the
+  server's reason when the session failed — the 1011 close reason),
+  *Connection timed out*, *A session is already open*, *Could not
+  connect* — and offers a **Reconnect** button once the session is no
+  longer live. One console session per (server, VM); a second
+  concurrent open is refused (409), and the VM detail page shows the
+  console as *open* while one is live.
 - **VNC** — noVNC over the SSH stdio TCP tunnel (`ssh -W`). The VNC
   port is read from the domain (auto-port resolved from the live XML
   while the domain is running).
 - **SPICE** — the spice-html5 fork. Each SPICE channel opens its own
-  concurrent tunnel (the same topology as websockify's
-  WebSocket-per-channel); when the main channel fails, the sibling
-  channels are torn down with it (their tunnels close too). The display
-  address comes from `virsh domdisplay` (SPICE ports are auto-assigned
-  at boot and the display is often loopback-bound). Channel count
-  matters: every channel is a long-lived HTTP stream, and on
-  plain HTTP/1.1 a browser allows only **six concurrent connections
-  per host**. The fork therefore opens only the channels it
-  implements (main, display, inputs, cursor, playback, port) and
-  skips the rest (usbredir, record) — a domain with two `spicevmc`
-  devices advertises eight channels, and the extras would both
-  deadlock on the browser side and confuse the spice-server. Behind
-  the mTLS reverse proxy the streams should ride HTTP/2, where the
-  per-host connection limit does not apply.
+  concurrent tunnel session (one WebSocket each — the same topology as
+  websockify's WebSocket-per-channel); when the main channel fails, the
+  sibling channels are torn down with it (their tunnels close too). The
+  display address comes from `virsh domdisplay` (SPICE ports are
+  auto-assigned at boot and the display is often loopback-bound). Behind
+  the mTLS reverse proxy the sessions ride HTTP/2 (one stream per
+  session on the tab's h2 connection), so the browser's per-origin
+  connection budget is not a constraint. The fork opens only the
+  channels it implements (main, display, inputs, cursor, playback, port)
+  and skips the rest (usbredir, record) — a domain with two `spicevmc`
+  devices advertises eight channels, and the extras would both confuse
+  the spice-server and hold ssh processes for nothing.
 
 **Auto-retry.** A console/VNC/SPICE page whose session fails or is lost
 reloads itself automatically — up to 5 times (the count survives the
@@ -255,9 +276,9 @@ destination from the VM's live display info. No client-supplied
 authenticated user point the remote SSH user at an arbitrary TCP service
 (SSRF).
 
-All three use the same plain-HTTP duplex transport — see
+All three use the same WebSocket session transport — see
 [TRANSPORT.md](TRANSPORT.md) and `web/static/duplex.js` for the design
-notes (ordering, h2, teardown).
+notes (the two legs, terminal close codes, liveness, teardown).
 
 ## Running in a container
 
@@ -270,17 +291,21 @@ needs a **data-dir volume** — no key files to mount.
 docker build -t virtweb .      # golang multi-stage build -> debian:trixie + openssh-client + sshpass
 docker run -d --name virtweb \
   -v $(pwd)/virtweb-data:/home/virtweb/.virtweb \
-  virtweb -addr 0.0.0.0:8080
+  -v $(pwd)/client-ca.pem:/home/virtweb/client-ca.pem \
+  virtweb -addr 0.0.0.0:8080 -client-ca /home/virtweb/client-ca.pem
 ```
 
-Flags for the proxy deployment: `-tls -tls-cert -tls-key -client-ca`
-(TLS/mTLS at virtweb), `-proxy-protocol -proxy-from <cidr>` (PROXY
-header from an L4 pass-through router). `sshpass` in the image covers
-password auth; key auth needs nothing extra.
+Flags for the proxy deployment: `-tls-cert -tls-key -client-ca`
+(TLS/mTLS at virtweb — TLS is always served; `-client-ca` is required
+unless you pass `-no-auth` to explicitly disable client auth),
+`-proxy-protocol
+-proxy-from <cidr>` (PROXY header from an L4 pass-through router).
+`sshpass` in the image covers password auth; key auth needs nothing
+extra.
 
 ## Offline demo mode (`-backend stub`)
 
-`virtweb -backend stub` runs against a deterministic in-process fake
+`virtweb -backend stub -no-auth` runs against a deterministic in-process fake
 libvirt host instead of a real SSH connection: a fixed VM table
 (`debian-dev`, `win10`, …) with a real state machine (start →
 *starting* → running, shutdown/destroy/reboot), virsh-shaped states, and
@@ -302,7 +327,9 @@ internal/sshexec           Runner interface + system-ssh implementation
 internal/virsh             Backend impl: virsh over sshexec
 internal/stub              deterministic stub Backend (-backend stub)
 internal/store             JSON-file server store (atomic, concurrency-safe)
-internal/api               REST + console/tunnel stream & input handlers
+internal/api               REST + the WebSocket session endpoints
+internal/ws                vendored single-file stdlib-only WebSocket
+                               package (RFC 6455 + h2 extended CONNECT)
 internal/webui             server-rendered HTML pages
 web/                       embedded frontend (templates/ + static/)
 third-party/               first-party forks: novnc, xtermjs,
@@ -313,4 +340,5 @@ e2e/                       Playwright e2e suite (stub + libvirt tiers)
 ## Status
 
 Feature-complete through the console, VNC, and SPICE transports (all
-over plain-HTTP streams, no WebSocket).
+over WebSocket sessions: HTTP/2 extended CONNECT for browsers,
+HTTP/1.1 Upgrade for tooling).

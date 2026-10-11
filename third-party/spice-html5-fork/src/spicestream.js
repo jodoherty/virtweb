@@ -4,10 +4,11 @@
 
    Upstream spice-html5 is hardwired to WebSocket (SpiceConn creates
    `new WebSocket(o.uri, 'binary')` and every child channel clones
-   `this.ws.url`), with no seam to replace it. This fork substitutes
-   SpiceStream: a WebSocket-shaped channel over virtweb's plain-HTTP
-   DuplexChannel (chunked flushed GET stream + ordered POST uplink).
-   No websockify, no WebSocket, no duplex fetch.
+   `this.ws.url`), which here would point at websockify. This fork
+   substitutes SpiceStream: a WebSocket-shaped channel over virtweb's
+   DuplexChannel (web/static/duplex.js) — one virtweb session (one ssh
+   -W tunnel) per SPICE channel, spoken over the browser's native
+   WebSocket. No websockify.
 
    The surface SpiceConn/wire.js actually touch:
      addEventListener('open'|'message'|'close'|'error', fn)
@@ -28,18 +29,15 @@ function SpiceStream(o)
 {
     if (o === undefined || o.uri === undefined || !o.uri)
         throw new Error("You must specify a uri");
-    if (o.inputUri === undefined || !o.inputUri)
-        throw new Error("You must specify an inputUri");
 
     this.url = o.uri;
-    this.inputUrl = o.inputUri;
     this.binaryType = "arraybuffer";
     this.readyState = 0; // CONNECTING
     this._listeners = { open: [], message: [], close: [], error: [] };
     this._dead = false;
 
     var self = this;
-    var ch = new DuplexChannel(o.uri, o.inputUri);
+    var ch = new DuplexChannel(o.uri);
     this._ch = ch;
 
     ch.open().then(function() {
@@ -72,9 +70,9 @@ function SpiceStream(o)
             }
             if (self.readyState !== 3) {
                 self.readyState = 3;
-                // Fork: the tunnel's terminal state (wire protocol v2)
-                // refines the bare stream EOF: a SESSION_ERROR frame
-                // (or a transport failure) reports the WHY through an
+                // Fork: the session's terminal state refines the bare
+                // close: a failed session (the 1011 close, whose reason
+                // is the server's message) reports the WHY through an
                 // error event before the close, so the page's onerror
                 // shows the server's message.
                 if (ch.closeReason === "error") {
@@ -104,7 +102,7 @@ SpiceStream.prototype = {
     },
 
     // Sends one protocol frame. Writes before the stream is open are
-    // queued by DuplexChannel and flushed in order on open, so the
+    // queued by DuplexChannel and sent in order on open, so the
     // link handshake (sent right after 'open') needs no special case.
     send: function(mb) {
         this._ch.write(mb);

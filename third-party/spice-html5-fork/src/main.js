@@ -203,7 +203,6 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
         {
             var conn = {
                         uri: this.ws.url,
-                        inputUri: this.ws.inputUrl, // fork: transport pair
                         parent: this,
                         connection_id : this.connection_id,
                         type : chans.channels[i].type,

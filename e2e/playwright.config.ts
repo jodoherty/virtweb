@@ -1,6 +1,4 @@
 import { defineConfig } from '@playwright/test';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 
 // The e2e environment is a single shared, persistent target (one virtweb
 // process + one stub host). All spec files mutate the same VMs, so they MUST
@@ -12,51 +10,47 @@ import path from 'node:path';
 //                     for debugging.
 //   own (E2E_ENV=own) globalSetup brings up a disposable env, globalTeardown
 //                     tears it down.
+//
+// The env runs over TLS against a fixture self-signed certificate
+// (virtweb requires TLS; see e2e/src/env/certs.js). Browsers ignore
+// the certificate errors here — the Node-side helpers do the same via
+// NODE_TLS_REJECT_UNAUTHORIZED in e2e/src/envinfo.js.
 const own = process.env.E2E_ENV === 'own';
-
-// L7-proxy envs settle graceful client disconnects only after the
-// proxy's idle timeout (HAProxy holds the backend connection until
-// its timeout; see src/env/proxy.js isL7), so the session-settle
-// deadlines there exceed the default 30 s test/hook timeout.
-function envTimeout() {
-  try {
-    // The manifest is the same contract the specs read (attach mode);
-    // in own mode it does not exist yet (globalSetup creates it later,
-    // and the default 30 s is fine there: own mode is not used with
-    // the proxy axis in CI).
-    // __dirname exists when the config is loaded as CJS; import.meta
-    // when as ESM (package.json "type": "module").
-    const here =
-      typeof __dirname !== 'undefined'
-        ? __dirname
-        : path.dirname(new URL(import.meta.url).pathname);
-    const manifest = JSON.parse(
-      readFileSync(path.join(here, '.artifacts', 'env.json'), 'utf8'),
-    );
-    if (manifest?.proxy && /-(l7)$/.test(String(manifest.proxy.kind))) {
-      return 90_000;
-    }
-  } catch {}
-  return 30_000;
-}
 
 export default defineConfig({
   testDir: './tests',
   workers: 1,
   fullyParallel: false,
   retries: 0,
-  timeout: envTimeout(),
+  timeout: 30_000,
   expect: { timeout: 5_000 },
   reporter: [['list'], ['./src/cheatsheet.js']],
   globalSetup: own ? './src/env/globalSetup.js' : undefined,
   globalTeardown: own ? './src/env/globalTeardown.js' : undefined,
+  use: {
+    ignoreHTTPSErrors: true, // Playwright 1.63: renamed from the old
+    // `ignoreHTTPSSerrors` (the old name is now silently ignored).
+  },
   projects: [
     // Tier 0: deterministic stub backend (the default, offline).
-    { name: 'stub', testIgnore: /\.real\.spec\.ts$/ },
+    // Chromium: ignoreHTTPSErrors does not reach every connection the
+    // browser opens (a WebSocket connection is a fresh one, and a
+    // cert failure there degrades the session to the h1 leg or kills
+    // it), so Chromium additionally ignores certificate errors at the
+    // browser level.
+    {
+      name: 'stub',
+      testIgnore: /\.real\.spec\.ts$/,
+      use: {
+        browserName: 'chromium',
+        launchOptions: { args: ['--ignore-certificate-errors'] },
+      },
+    },
     // Same specs on Firefox: the production browsers include Firefox and
-    // it diverges from Chromium on the transport (same-URL in-flight GET
-    // queueing, see doc/TRANSPORT.md) and on CSS cursor handling; the stub
-    // tier is where those regressions are cheapest to catch.
+    // it diverges from Chromium on the transport (h2 extended-CONNECT
+    // vs h1 upgrade fallback, see doc/TRANSPORT.md) and on CSS cursor
+    // handling; the stub tier is where those regressions are cheapest to
+    // catch.
     { name: 'stub-firefox', use: { browserName: 'firefox' },
       testIgnore: /\.real\.spec\.ts$/ },
     // Tier 2: real libvirt podman host (@real specs only).

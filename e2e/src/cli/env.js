@@ -2,7 +2,7 @@
 // --json where sensible. Phase 2 implements the stub backend; the
 // libvirt container backend joins in phase 3.
 //
-//   node src/cli/env.js up [--backend stub] [--proxy haproxy-l7|haproxy-l4|traefik-l7|traefik-l4]
+//   node src/cli/env.js up [--backend stub] [--proxy haproxy-l4|traefik-l4]
 //   node src/cli/env.js down
 //   node src/cli/env.js status [--json]
 //   node src/cli/env.js logs
@@ -23,10 +23,15 @@ import {
   waitForExit,
   start,
   waitReady,
+  trustFixtureCerts,
 } from '../env/virtweb.js';
 import { Api } from '../api.js';
 import * as libvirt from '../env/libvirt.js';
 import * as proxy from '../env/proxy.js';
+
+// The env runs over TLS (virtweb requires it): this CLI's fetches
+// (registerServer, status) target the fixture certificate.
+trustFixtureCerts();
 
 const [,, cmd, ...rest] = process.argv;
 const flags = new Set(rest.filter((a) => a.startsWith('--')));
@@ -48,7 +53,7 @@ function manifestLive(m) {
   return (
     m &&
     isAlive(m.virtweb.pid) &&
-    m.virtweb.url.startsWith('http://127.0.0.1:')
+    m.virtweb.url.startsWith('https://127.0.0.1:')
   );
 }
 
@@ -76,16 +81,17 @@ async function cmdUp() {
   const port = await pickPort();
   const { pid, logPath } = start({ port, backend: backend === 'libvirt' ? 'ssh' : 'stub' });
   console.log(`starting virtweb (${backend} backend) on ${port} (pid ${pid})...`);
-  await waitReady(`http://127.0.0.1:${port}`, 15000);
+  await waitReady(`https://127.0.0.1:${port}`, 15000);
 
-  // The proxy axis (optional): a real proxy container in front of
-  // virtweb; the env URL the tests use becomes the proxy's URL.
+  // The proxy axis (optional): a real TCP (L4) reverse proxy container
+  // in front of virtweb; the env URL the tests use becomes the proxy's
+  // URL.
   let proxyInfo;
-  let url = `http://127.0.0.1:${port}`;
+  let url = `https://127.0.0.1:${port}`;
   if (proxyKind !== 'none') {
     console.log(`starting the reverse proxy (${proxyKind}) in front of virtweb...`);
     proxyInfo = await proxy.startProxy(proxyKind, port, waitReady);
-    url = `http://127.0.0.1:${proxyInfo.port}`;
+    url = `https://127.0.0.1:${proxyInfo.port}`;
   }
 
   let sshPort;
@@ -281,7 +287,7 @@ switch (cmd) {
   case 'doctor': cmdDoctor(); break;
   default:
     console.error(
-      'usage: env.js <up [--backend stub|libvirt] [--proxy haproxy-l7|haproxy-l4|traefik-l7|traefik-l4] | ' +
+      'usage: env.js <up [--backend stub|libvirt] [--proxy haproxy-l4|traefik-l4] | ' +
         'down [--wipe] | status [--json] | logs | reset | restart-api | doctor [--json]>',
     );
     process.exit(2);

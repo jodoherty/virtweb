@@ -1,116 +1,35 @@
-// Consumes a generic TCP tunnel stream (chunked GET → ReadableStream)
-// and sends input (POST raw bytes) — the API-level twin of what
-// DuplexChannel does in the browser. Mirrors ConsoleSession from
-// console.js; every byte in both directions is appended to logPath.
-import { appendFileSync, mkdirSync } from 'node:fs';
-import path from 'node:path';
-import { FrameDecoder, encodeFrame, TAG } from './frames.js';
+// Consumes a generic TCP tunnel session (one WebSocket: binary
+// messages down, binary messages up) — the API-level twin of what
+// DuplexChannel does in the browser. Mirrors ConsoleSession; every
+// byte in both directions is appended to logPath.
+import { StreamSession } from './ws.js';
 
-export class TunnelSession {
-  /**
-   * @param {object} o
-   * @param {string} o.baseUrl virtweb base URL
-   * @param {string} o.serverId
-   * @param {string} o.vm
-   * @param {string} o.display display to tunnel to, resolved server-side (vnc|spice)
-   * @param {string} [o.logPath]
-   * @param {(chunk: Uint8Array) => void} [o.onChunk]
-   */
+export class TunnelSession extends StreamSession {
   async open({ baseUrl, serverId, vm, display, logPath, onChunk }) {
     const vmName = encodeURIComponent(vm);
     const q = `?display=${encodeURIComponent(display)}`;
-    this.streamUrl = `${baseUrl}/api/servers/${serverId}/vms/${vmName}/tunnel/stream${q}`;
-    this.logPath = logPath;
-    this.text = '';
-    this.output = new TextDecoder();
-    this.chunkCount = 0;
-
-    this.res = await fetch(this.streamUrl);
-    this.status = this.res.status;
-    this.sid = this.res.headers.get('x-tunnel-id');
-    this.inputUrl = `${baseUrl}/api/servers/${serverId}/vms/${vmName}/tunnel/input?id=${this.sid ?? ''}`;
-    this.headers = {
-      'x-accel-buffering': this.res.headers.get('x-accel-buffering'),
-      'cache-control': this.res.headers.get('cache-control'),
-    };
-    if (!this.res.ok || !this.res.body) {
-      this.body = null;
-      this.done = Promise.resolve();
-      return this;
-    }
-
-    const reader = this.res.body.getReader();
-    this._reader = reader;
-    // Surface terminal frames (v2) on this.terminal.
-    this.terminal = null;
-    this.frames = new FrameDecoder(undefined, (term) => {
-      this.terminal = term;
+    return super.open({
+      baseUrl,
+      path: `/api/servers/${serverId}/vms/${vmName}/tunnel/stream${q}`,
+      logPath,
+      onChunk,
     });
-    this._record = (label, bytes) => {
-      if (!logPath) return;
-      mkdirSync(path.dirname(logPath), { recursive: true });
-      const text =
-        label +
-        '\n' +
-        Buffer.from(bytes).toString('hex') +
-        '  ' +
-        JSON.stringify(new TextDecoder().decode(bytes)) +
-        '\n';
-      appendFileSync(logPath, text);
-    };
-    this._record('== session open ==', new Uint8Array());
-    this.done = (async () => {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        this._record('<<', value);
-        // The downlink speaks the wire protocol: each DATA frame is
-        // one unit of incremental arrival (KEEPALIVEs dropped, HELLO
-        // checked, terminals surfaced), so chunkCount counts DATA
-        // frames.
-        for (const payload of this.frames.feed(value)) {
-          this.chunkCount++;
-          this.text += this.output.decode(payload, { stream: true });
-          onChunk?.(payload);
-        }
-      }
-      this.text += this.output.decode();
-    })();
-    this.close = async () => {
-      this._record('== client disconnect ==', new Uint8Array());
-      await reader.cancel().catch(() => {});
-    };
-    return this;
-  }
-
-  // Sends raw input bytes (wrapped in a DATA frame); returns the HTTP
-  // status of the POST.
-  async input(bytes) {
-    const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
-    this._record?.('>>', data);
-    const res = await fetch(this.inputUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: encodeFrame(TAG.data, data),
-    });
-    await res.body?.cancel().catch(() => {});
-    return res.status;
-  }
-
-  // Resolves when the server ends the stream.
-  async closed(timeoutMs = 10000) {
-    const timeout = new Promise((_, reject) => {
-      const t = setTimeout(
-        () => reject(new Error(`tunnel stream did not end within ${timeoutMs}ms`)),
-        timeoutMs,
-      );
-      t.unref?.();
-    });
-    await Promise.race([this.done, timeout]);
-    return this.text;
   }
 }
 
 export async function openTunnel(opts) {
   return await new TunnelSession().open(opts);
+}
+
+// tunnelOpenCount is the number of tunnel sessions the server reports
+// open (all of them: the registry is global). The tunnel has no
+// per-(server, VM) exclusivity — several concurrent sessions per VM
+// are the SPICE case — so settles compare against a baseline.
+export async function tunnelOpenCount(baseUrl, serverId) {
+  const res = await fetch(
+    `${baseUrl}/api/servers/${serverId}/vms/x/tunnel/status`,
+  );
+  if (res.status !== 200) throw new Error(`tunnel status: HTTP ${res.status}`);
+  const out = await res.json();
+  return out.open;
 }

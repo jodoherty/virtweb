@@ -159,7 +159,7 @@ func TestMtlsProxyPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := tlsConfigFromFiles(f.server, f.server, f.ca)
+	cfg, _, err := tlsConfig(f.server, f.server, f.ca)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,6 +241,29 @@ func TestMtlsProxyPipeline(t *testing.T) {
 	}
 	if peerCN != "virtweb-test-client" {
 		t.Errorf("server saw client cert CN %q", peerCN)
+	}
+}
+
+func TestValidateAuthFlags(t *testing.T) {
+	cases := []struct {
+		name     string
+		clientCA string
+		noAuth   bool
+		wantErr  bool
+	}{
+		{"mTLS (the default posture)", "ca.pem", false, false},
+		{"explicit opt-out", "", true, false},
+		{"refused: no auth posture", "", false, true},
+		{"refused: both", "ca.pem", true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateAuthFlags(c.clientCA, c.noAuth)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("validateAuthFlags(%q, %v) error = %v; want error %v",
+					c.clientCA, c.noAuth, err, c.wantErr)
+			}
+		})
 	}
 }
 

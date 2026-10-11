@@ -372,7 +372,7 @@ test('console page for a shut-off VM shows the start hint', async ({ page }) => 
 });
 
 test('VNC page loads noVNC and attempts a tunnel connection', async ({ page }) => {
-  // noVNC is wired over the plain-HTTP tunnel endpoints. The stub
+  // noVNC is wired over the WebSocket tunnel endpoint. The stub
   // tunnel is not a real RFB server, so the handshake fails — the point
   // here is that the page attempts a real connection.
   // (transport.spec.ts covers the transport itself.)

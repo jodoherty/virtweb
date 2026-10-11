@@ -1,9 +1,18 @@
 // SPICE viewer: spice-html5 fork (third-party/spice-html5-fork) over
-// the tunnel endpoints. Each SPICE channel gets its own
-// (GET stream + POST input) session, i.e. its own ssh -W tunnel —
-// the same shape as the WebSocket-per-channel websockify topology.
+// the tunnel endpoint. Each SPICE channel gets its own WebSocket
+// session, i.e. its own ssh -W tunnel — the same shape as the
+// WebSocket-per-channel websockify topology.
 import { SpiceMainConn } from '/spice/src/main.js';
 import { scheduleRetry, clearRetries } from '/static/retry.js';
+
+// A session that landed on the HTTP/1.1 leg instead of HTTP/2 is
+// visible at a glance (keepalive-driven liveness, per-origin
+// connection budget) — see doc/TRANSPORT.md.
+let protoMarker = '';
+try {
+  if (performance.getEntriesByType('navigation')[0]?.nextHopProtocol !== 'h2')
+    protoMarker = ' · h1';
+} catch { /* no timing info: assume the happy path */ }
 
 const cfg = JSON.parse(document.getElementById('spice-cfg').textContent);
 const statusEl = document.getElementById('spice-status');
@@ -16,6 +25,18 @@ if (reconnectBtn)
 // The Disconnect button is only on screen while a session is live;
 // Reconnect takes over afterwards (both never share the screen).
 const disconnectBtn = document.getElementById('spice-disconnect');
+// Tear down the fork (siblings first, then the main channel in
+// "closing" state) so each channel dies with its tunnel session. The
+// fork otherwise leaves its socket open after a failed handshake, so
+// this also runs on page unload as a best-effort cleanup.
+function teardownFork() {
+  const sp = window.__spice;
+  if (sp) {
+    sp.close_sibling_channels();
+    sp.cleanup();
+    window.__spice = undefined;
+  }
+}
 function spiceStatus(msg, { failed = false, reconnect = false, connected = false } = {}) {
   statusEl.textContent = msg;
   statusEl.classList.toggle('status-err', failed);
@@ -24,16 +45,7 @@ function spiceStatus(msg, { failed = false, reconnect = false, connected = false
 }
 if (disconnectBtn)
   disconnectBtn.addEventListener('click', () => {
-    // Deliberate teardown in the fork's own idiom: siblings first, then
-    // the main channel in "closing" state, so the close events report
-    // nothing. Each channel dies with its tunnel session (the server
-    // kills the ssh -W process when the stream request ends).
-    const sp = window.__spice;
-    if (sp) {
-      sp.close_sibling_channels();
-      sp.cleanup();
-      window.__spice = undefined;
-    }
+    teardownFork();
     // The display area is the page's own element (#spice); the fork's
     // canvases (and the simulated-cursor overlay, when in use) are its
     // children. Drop the last frame and the guest cursor so the
@@ -50,6 +62,10 @@ if (disconnectBtn)
     // next Connect (possibly with a password) is one click away.
     if (formEl) formEl.hidden = false;
   });
+// Best-effort cleanup on navigation away / tab close: close the
+// fork's tunnels so the server drops the session instead of waiting
+// for the transport to notice a vanished client.
+window.addEventListener('pagehide', () => { teardownFork(); clearRetries(); });
 
 // The connect form is an overlay card that disappears once the
 // session is live; the display area never moves either way.
@@ -273,7 +289,6 @@ document.getElementById('spice-form').addEventListener('submit', (e) => {
   // connection, readable from DevTools and the e2e suite.
   window.__spice = new SpiceMainConn({
     uri: cfg.tunnelBase + '/stream' + p,
-    inputUri: cfg.tunnelBase + '/input' + p,
     password: q.get('password') || '',
     screen_id: 'spice',
     message_id: 'spice-messages',
@@ -282,7 +297,7 @@ document.getElementById('spice-form').addEventListener('submit', (e) => {
     onagent: () => guestResize(),
     onsuccess: () => {
       clearRetries();
-      spiceStatus('Connected.', { reconnect: false, connected: true });
+      spiceStatus('Connected.' + protoMarker, { reconnect: false, connected: true });
       if (formEl) formEl.hidden = true;
     },
     onerror: (err) => {

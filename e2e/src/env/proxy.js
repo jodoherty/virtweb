@@ -4,11 +4,15 @@
 // the fixtures under e2e/fixtures/proxy/.
 //
 // The proxy is an orthogonal env axis: `env:up --proxy
-// haproxy-l7|haproxy-l4|traefik-l7|traefik-l4` puts the whole suite
-// behind that proxy (the manifest URL becomes the proxy's URL), so
-// every spec — streams, keepalives, input, terminal frames, UI — runs
-// through a real proxy implementation. `tests/proxy.spec.ts` adds the
-// proxy-specific assertions on top.
+// haproxy-l4|traefik-l4` puts the whole suite behind that proxy (the
+// manifest URL becomes the proxy's URL), so every spec — sessions,
+// keepalive, terminal state, UI — runs through a real proxy
+// implementation. The production topology is L4 pass-through (the
+// proxy forwards the raw TLS stream; virtweb terminates TLS itself and
+// negotiates h2 over ALPN), so the axis is L4-only: an L7 proxy would
+// have to be configured to pass WebSocket upgrades through, which the
+// deployment contract does not require.
+// `tests/proxy.spec.ts` adds the proxy-specific assertions on top.
 //
 // Rootless note: the proxy container runs with --network host, so it
 // listens on a host 127.0.0.1 port and reaches virtweb (also a host
@@ -19,37 +23,26 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { E2E_ROOT, ARTIFACTS } from './manifest.js';
-import { pickPort } from './virtweb.js';
+import { pickPort, trustFixtureCerts } from './virtweb.js';
 
 export const PROXY_CONTAINER = 'vw-e2e-proxy';
 
 export const PROXY_KINDS = [
-  'haproxy-l7',
   'haproxy-l4',
-  'traefik-l7',
   'traefik-l4',
 ];
 
 // Pinned images (plain docker.io names pull in this environment).
 const IMAGES = {
-  'haproxy-l7': 'docker.io/haproxy:2.8',
   'haproxy-l4': 'docker.io/haproxy:2.8',
-  'traefik-l7': 'docker.io/traefik:v3.1',
   'traefik-l4': 'docker.io/traefik:v3.1',
 };
 
 // FIXTURES lists the template file(s) rendered into .artifacts/proxy/
 // and mounted into the container.
 const FIXTURES = {
-  'haproxy-l7': [
-    { tpl: 'haproxy/haproxy-l7.cfg', dest: '/etc/haproxy/haproxy.cfg' },
-  ],
   'haproxy-l4': [
     { tpl: 'haproxy/haproxy-l4.cfg', dest: '/etc/haproxy/haproxy.cfg' },
-  ],
-  'traefik-l7': [
-    { tpl: 'traefik/static-l7.yml', dest: '/etc/traefik/static.yml' },
-    { tpl: 'traefik/routes-l7.yml', dest: '/etc/traefik/routes.yml' },
   ],
   'traefik-l4': [
     { tpl: 'traefik/static-l4.yml', dest: '/etc/traefik/static.yml' },
@@ -68,48 +61,13 @@ export function imageFor(kind) {
   return IMAGES[kind];
 }
 
-// isL7 reports whether the proxy kind terminates HTTP (mode http /
-// Caddy). L7 proxies hold the backend connection until their own idle
-// timeouts even after a GRACEFUL client disconnect (FIN); only a RST
-// propagates immediately. That is inherent L7 semantics and the reason
-// the production topology uses L4 pass-through — tests that assert
-// prompt session teardown must use longer deadlines through L7.
-export function isL7(kind) {
-  return kind === 'haproxy-l7' || kind === 'traefik-l7';
-}
-
-// renderedDir returns .artifacts/proxy/ with the kind's config
-// rendered (placeholders substituted) — the files get mounted in.
-function render(kind, { proxyPort, backendPort }) {
-  const dir = path.join(ARTIFACTS, 'proxy');
-  mkdirSync(dir, { recursive: true });
-  const mounts = [];
-  for (const { tpl, dest } of FIXTURES[kind]) {
-    const body = readFileSync(path.join(E2E_ROOT, 'fixtures', 'proxy', tpl), 'utf8')
-      .replaceAll('{{PROXY_PORT}}', String(proxyPort))
-      .replaceAll('{{BACKEND_PORT}}', String(backendPort));
-    const rendered = path.join(dir, path.basename(tpl));
-    writeFileSync(rendered, body);
-    // Single argument (-v<src>:<dst>:ro): podman mis-parses "-v"
-    // followed by a value that contains a space-including flag, and
-    // even the plain two-arg form is rejected when the source path
-    // itself is flagged; adjacent form is the safe one.
-    mounts.push(`-v${rendered}:${dest}:ro`);
-  }
-  return { dir, mounts };
-}
-
-// command returns the container's command override (the images'
-// default entrypoints look at a different config path).
 function command(kind) {
   switch (kind) {
-    case 'haproxy-l7':
     case 'haproxy-l4':
       // The image's entrypoint assumes /usr/local/etc (the alpine
       // build); the Debian image's default path is /etc/haproxy.
       // -db = foreground + no daemon.
       return ['/usr/local/sbin/haproxy', '-f', '/etc/haproxy/haproxy.cfg', '-db'];
-    case 'traefik-l7':
     case 'traefik-l4':
       return ['--configFile=/etc/traefik/static.yml'];
   }
@@ -155,6 +113,27 @@ export function proxyDown() {
   return true;
 }
 
+// render returns .artifacts/proxy/ with the kind's config
+// rendered (placeholders substituted) — the files get mounted in.
+function render(kind, { proxyPort, backendPort }) {
+  const dir = path.join(ARTIFACTS, 'proxy');
+  mkdirSync(dir, { recursive: true });
+  const mounts = [];
+  for (const { tpl, dest } of FIXTURES[kind]) {
+    const body = readFileSync(path.join(E2E_ROOT, 'fixtures', 'proxy', tpl), 'utf8')
+      .replaceAll('{{PROXY_PORT}}', String(proxyPort))
+      .replaceAll('{{BACKEND_PORT}}', String(backendPort));
+    const rendered = path.join(dir, path.basename(tpl));
+    writeFileSync(rendered, body);
+    // Single argument (-v<src>:<dst>:ro): podman mis-parses "-v"
+    // followed by a value that contains a space-including flag, and
+    // even the plain two-arg form is rejected when the source path
+    // itself is flagged; adjacent form is the safe one.
+    mounts.push(`-v${rendered}:${dest}:ro`);
+  }
+  return { dir, mounts };
+}
+
 // startProxy renders the config, runs the container on a fresh
 // 127.0.0.1 port, and waits until virtweb answers THROUGH the proxy.
 export async function startProxy(kind, backendPort, waitReady) {
@@ -176,7 +155,7 @@ export async function startProxy(kind, backendPort, waitReady) {
     image,
     ...command(kind),
   ]);
-  await waitProxyReady(`http://127.0.0.1:${proxyPort}`);
+  await waitProxyReady(`https://127.0.0.1:${proxyPort}`);
   return { kind, port: proxyPort, container: PROXY_CONTAINER, image };
 }
 
@@ -187,6 +166,7 @@ export async function startProxy(kind, backendPort, waitReady) {
 // finishes loading, which is slow on loaded hosts). HAProxy starts
 // ready. Connection refusals are just "not up yet".
 export async function waitProxyReady(url, timeoutMs = 300000) {
+  trustFixtureCerts();
   const deadline = Date.now() + timeoutMs;
   let lastErr;
   while (Date.now() < deadline) {
@@ -226,7 +206,7 @@ export function proxyLogs(n = 100) {
 export const NEGCTL_CONTAINER = 'vw-e2e-proxy-negctl';
 const NEGCTL_CFG = `global
 defaults
-    mode http
+    mode tcp
     timeout connect 5s
     timeout client 4s
     timeout server 4s
@@ -238,7 +218,7 @@ backend be
 `;
 
 export async function startNegativeControl(backendPort, waitReady) {
-  ensureImagePulled(IMAGES['haproxy-l7']);
+  ensureImagePulled(IMAGES['haproxy-l4']);
   const dir = path.join(ARTIFACTS, 'proxy-negctl');
   mkdirSync(dir, { recursive: true });
   if (proxyRunningNegctl()) podman(['rm', '-f', NEGCTL_CONTAINER]);
@@ -255,10 +235,10 @@ export async function startNegativeControl(backendPort, waitReady) {
     '--name', NEGCTL_CONTAINER,
     '--network', 'host',
     `-v${rendered}:/etc/haproxy/haproxy.cfg:ro`,
-    IMAGES['haproxy-l7'],
-    ...command('haproxy-l7'),
+    IMAGES['haproxy-l4'],
+    ...command('haproxy-l4'),
   ]);
-  const url = `http://127.0.0.1:${proxyPort}`;
+  const url = `https://127.0.0.1:${proxyPort}`;
   await waitReady(url, 20000);
   return { port: proxyPort, container: NEGCTL_CONTAINER };
 }

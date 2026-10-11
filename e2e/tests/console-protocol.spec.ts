@@ -1,11 +1,15 @@
+// Console session protocol (stub project): one WebSocket session per
+// (server, VM). The session's terminal state rides the close code:
+// 1000 for a clean end, 1011 + the server's message for a failed
+// session; pre-upgrade problems (unknown server, session in use, cap)
+// are ordinary HTTP statuses on the HEAD preflight.
 import { test, expect } from '@playwright/test';
 import { requireEnv } from '../src/envinfo.js';
 import { Api, ApiError } from '../src/api.js';
 import { openConsole, ConsoleSession, waitForNoSession } from '../src/console.js';
-import { FrameDecoder, HELLO_FLAG_TERMINAL } from '../src/frames.js';
+import { preflightStatus } from '../src/ws.js';
 import { waitFor } from '../src/wait.js';
 import { startStub } from '../src/stubInstance.js';
-import { isL7 } from '../src/env/proxy.js';
 
 let api: Api;
 let serverId: string;
@@ -42,17 +46,22 @@ async function open(name = 'debian-dev', outputDir?: string) {
   return s;
 }
 
-test('input without an open session -> 404', async () => {
+const streamUrl = () =>
+  `${api.baseUrl}/api/servers/${serverId}/vms/debian-dev/console/stream`;
+
+test('preflight reports the session lifecycle', async () => {
   // must run before any session exists (declared first)
-  const res = await fetch(
-    `${api.baseUrl}/api/servers/${serverId}/vms/debian-dev/console/input`,
-    { method: 'POST', body: 'x\r' },
-  );
-  await res.body?.cancel();
-  expect(res.status).toBe(404);
+  expect(await preflightStatus(streamUrl())).toBe(200); // openable
+
+  const s = await open('debian-dev');
+  expect(s.status).toBe(200);
+  expect(await preflightStatus(streamUrl())).toBe(409); // in use
+  await s.close();
+  await waitForNoSession(api.baseUrl, serverId, 'debian-dev');
+  expect(await preflightStatus(streamUrl())).toBe(200); // openable again
 });
 
-test('stream + input round-trip', async ({}, testInfo) => {
+test('session + input round-trip', async ({}, testInfo) => {
   const s = await open('debian-dev', testInfo.outputDir);
   expect(s.status).toBe(200);
   await s.input('hostname\r');
@@ -64,80 +73,30 @@ test('stream + input round-trip', async ({}, testInfo) => {
   expect(s.text).toContain('Welcome to the virtweb stub console');
 });
 
-test('second concurrent stream -> 409', async () => {
+test('second concurrent session -> 409', async () => {
   const first = await open('debian-dev');
-  const res = await fetch(
-    `${api.baseUrl}/api/servers/${serverId}/vms/debian-dev/console/stream`,
-  );
-  await res.body?.cancel();
-  expect(res.status).toBe(409);
+  const second = await openConsole({ baseUrl: api.baseUrl, serverId, vm: 'debian-dev' });
+  expect(second.status).toBe(409);
+  expect(second.ws).toBeNull(); // refused pre-upgrade: no connection
   await first.close();
 });
 
-test('client disconnect kills the session; input after close -> 404', async () => {
+test('client disconnect kills the session', async () => {
   const s = await open('debian-dev');
   await s.input('hostname\r');
   await waitFor(async () => s.lines.includes('debian-dev'));
-  await s.close(); // cancel the stream => server cancels r.Context()
-  // L7 proxies settle a graceful FIN only after their idle timeout.
-  const m2 = requireEnv();
-  const timeout = m2?.proxy && isL7(m2.proxy.kind) ? 45_000 : 15_000;
-  await waitFor(async () => (await s.input('x\r')) === 404, {
-    timeout,
-    message: 'session gone after disconnect',
-  });
+  await s.close(); // the server notices the transport died asynchronously
+  await waitForNoSession(api.baseUrl, serverId, 'debian-dev', { timeout: 15_000 });
+  // settled: the session can be opened again
+  expect(await preflightStatus(streamUrl())).toBe(200);
 });
 
 /* ---------- STUB_SCENARIO error paths (disposable instances) ---------- */
 
-test('idle stream emits KEEPALIVE frames while quiet', async () => {
-  // Proxy-timeout protection (wire protocol v1): with a short
-  // keepalive interval, an idle console stream must not go quiet —
-  // the server emits KEEPALIVE frames while the session is silent.
-  const inst = await startStub({ flags: ['-keepalive', '200ms'] });
-  try {
-    // The stub console requires a running domain (the shared env's
-    // beforeAll boots it; a fresh instance starts with it shut off).
-    const api2 = new Api(inst.url);
-    await api2.action(inst.serverId, 'debian-dev', 'start');
-    await waitFor(async () => {
-      const vms = await api2.listVMs(inst.serverId);
-      return vms.find((v) => v.name === 'debian-dev')?.state === 'running';
-    }, { message: 'debian-dev running', timeout: 5000 });
-
-    const res = await fetch(
-      `${inst.url}/api/servers/${inst.serverId}/vms/debian-dev/console/stream`,
-    );
-    expect(res.status).toBe(200);
-    const reader = res.body!.getReader();
-    let sawData = false;
-    let sawKeepalive = false;
-    const frames = new FrameDecoder(() => {
-      sawKeepalive = true;
-    });
-    try {
-      const deadline = Date.now() + 5000;
-      while (!sawKeepalive && Date.now() < deadline) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (frames.feed(value).length > 0) sawData = true;
-      }
-    } finally {
-      await reader.cancel().catch(() => {});
-    }
-    // The stub banner arrives as DATA first, then the stream goes idle
-    // and keepalives start.
-    expect(sawData).toBe(true);
-    expect(sawKeepalive).toBe(true);
-  } finally {
-    await inst.close();
-  }
-});
-
-test('clean session end emits a SESSION_END frame as the last frame', async () => {
-  // Wire protocol v2: the terminal state is in-band — a SESSION_END
-  // frame (announced by the HELLO flags bit) precedes the stream EOF,
-  // so the client reports WHY the session ended.
+test('clean session end closes with 1000', async () => {
+  // The console-drop scenario serves the banner then ends the session
+  // cleanly (a clean server-side close, as when the console detaches):
+  // the terminal close is 1000.
   const inst = await startStub({ scenario: 'console-drop' });
   try {
     const api2 = new Api(inst.url);
@@ -149,26 +108,25 @@ test('clean session end emits a SESSION_END frame as the last frame', async () =
 
     const s = await openConsole({ baseUrl: inst.url, serverId: inst.serverId, vm: 'debian-dev' });
     expect(s.status).toBe(200);
-    expect(s.frames.flags & HELLO_FLAG_TERMINAL).toBeTruthy(); // v2 announced
     await s.closed(5000);
-    expect(s.terminal).toMatchObject({ kind: 'end' });
+    expect(s.terminal).toMatchObject({ code: 1000 });
     expect(s.text).toContain('Linux debian-dev'); // DATA arrived before the end
   } finally {
     await inst.close();
   }
 });
 
-test('failed session ends with a SESSION_ERROR frame carrying the server message', async () => {
+test('failed session closes with 1011 and the server message', async () => {
   // The ssh to the remote host fails: the client still gets a clean
-  // stream EOF — but with the SESSION_ERROR frame telling it why.
+  // transport end — but with the 1011 close code and the server's
+  // message in the close reason.
   const inst = await startStub({ scenario: 'ssh-down' });
   try {
     const s = await openConsole({ baseUrl: inst.url, serverId: inst.serverId, vm: 'debian-dev' });
     expect(s.status).toBe(200);
-    expect(s.frames.flags & HELLO_FLAG_TERMINAL).toBeTruthy(); // v2 announced
     await s.closed(5000);
-    expect(s.terminal?.kind).toBe('error');
-    expect(s.terminal!.message.length).toBeGreaterThan(0);
+    expect(s.terminal?.code).toBe(1011);
+    expect(s.terminal!.reason.length).toBeGreaterThan(0);
     expect(s.text).toBe(''); // no DATA: the session died before output
   } finally {
     await inst.close();
@@ -208,7 +166,7 @@ test('scenario ssh-down: every backend call fails', async () => {
   }
 });
 
-test('scenario console-drop: stream dies after the banner', async () => {
+test('scenario console-drop: session dies after the banner', async () => {
   const inst = await startStub({ scenario: 'console-drop' });
   try {
     const api2 = new Api(inst.url);

@@ -1,7 +1,10 @@
 // Serial console: xterm.js 6.0.0 fork (third-party/xtermjs, MIT)
-// over DuplexChannel (web/static/duplex.js): one GET stream for the
-// downlink, ordered POSTs for the uplink. No WebSocket.
+// over DuplexChannel (web/static/duplex.js): one WebSocket session —
+// binary messages down (console output), binary messages up
+// (keystrokes). The session's terminal state is the ws close
+// code/reason.
 // One console session per (server, VM); a concurrent open gets 409.
+// (Preflighted with HEAD before the handshake.)
 import { DuplexChannel } from './duplex.js';
 import { scheduleRetry, clearRetries } from './retry.js';
 
@@ -49,13 +52,18 @@ if (!live) {
   // drives the transport through __duplex).
   window.__term = term;
 
-  const ch = new DuplexChannel(cfg.streamUrl, cfg.inputUrl, {
+  const ch = new DuplexChannel(cfg.streamUrl, {
     // The server holds the connection while it sets up the remote ssh
     // session; bound it so a wedged server can't leave "Connecting…" up
     // forever.
     connectTimeoutMs: 20_000,
   });
   window.__duplex = ch;
+
+  // A session that landed on the HTTP/1.1 leg instead of HTTP/2 is
+  // visible at a glance (keepalive-driven liveness, per-origin
+  // connection budget) — see doc/TRANSPORT.md.
+  const protoMarker = ch.http2 ? '' : ' · h1';
 
   // Reconnect affordance, shown once the session is no longer live.
   // Reconnect also resets the auto-retry budget (a fresh attempt set).
@@ -96,16 +104,16 @@ if (!live) {
     await ch.open();
     connected = true;
     clearRetries();
-    setStatus('Connected.', { reconnect: false });
+    setStatus('Connected.' + protoMarker, { reconnect: false });
     const decoder = new TextDecoder();
     for await (const value of ch.readable) {
       term.write(decoder.decode(value, { stream: true }));
     }
     term.write(decoder.decode());
-    // The stream ended. Wire protocol v2 tells us HOW: a SESSION_ERROR
-    // frame (the session failed server-side, with the reason) is an
-    // error even though the stream closed cleanly; everything else is
-    // a clean end (VM stopped, console detached, …).
+    // The stream ended. The close code tells us HOW: a failed session
+    // (1011, with the server's message as the close reason) is an
+    // error; a clean 1000 end is a session over (VM stopped, console
+    // detached, …).
     if (ch.closeReason === 'error') {
       const why = ch.terminalMessage
         ? ': ' + ch.terminalMessage
@@ -123,7 +131,13 @@ if (!live) {
     } else if (err.code === 'timeout') {
       retryOrReconnect('Connection timed out — the server did not open the console in time');
     } else if (connected) {
-      retryOrReconnect('Connection lost — the session was dropped mid-stream');
+      // The session was live; the downlink then ended in error. When
+      // the server had a terminal message (the 1011 close reason) it
+      // carried here; otherwise the transport itself died.
+      const why = ch.terminalMessage
+        ? ': ' + ch.terminalMessage
+        : ' — the session was dropped mid-stream';
+      retryOrReconnect('Connection lost' + why);
     } else {
       retryOrReconnect('Could not connect: ' + err.message);
     }

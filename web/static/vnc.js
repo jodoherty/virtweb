@@ -1,5 +1,5 @@
 // VNC viewer: noVNC 1.7.0 fork (third-party/novnc; see its
-// MPL-2.0) over the plain-HTTP tunnel endpoints — no websockify.
+// MPL-2.0) over the WebSocket tunnel endpoint.
 //
 // The transport swap lives here, not in the fork: noVNC's transport
 // layer (core/websock.js) accepts any "raw channel" object via
@@ -7,8 +7,8 @@
 // 8-property surface (send, close, binaryType, onerror, onmessage,
 // onopen, protocol, readyState) — WebSocket and RTCDataChannel are the
 // two reference examples. ChannelSocket below provides that surface
-// over DuplexChannel (GET stream + ordered POST uplink), and RFB's
-// constructor takes the channel directly.
+// over DuplexChannel (one WebSocket session), and RFB's constructor
+// takes the channel directly.
 import RFB from '/novnc/core/rfb.js';
 import { DuplexChannel } from '/static/duplex.js';
 import { scheduleRetry, clearRetries } from '/static/retry.js';
@@ -38,9 +38,9 @@ class ChannelSocket {
     }).catch((e) => this._close(e));
     ch.closed.then(() => {
       // The channel's terminal state says why: 'error' covers both a
-      // wire-protocol-v2 SESSION_ERROR frame (the tunnel failed
-      // server-side; its message explains) and a bare transport
-      // failure. Anything else is a clean end (code 1000).
+      // failed session (the 1011 close, whose reason is the server's
+      // message) and a bare transport failure. Anything else is a
+      // clean end (code 1000).
       if (ch.closeReason === 'error') {
         this._close(new Error(ch.terminalMessage || 'connection lost'));
       } else {
@@ -89,12 +89,13 @@ class ChannelSocket {
   send(chunk) {
     if (this.readyState !== 'open') return;
     // noVNC's websock hands us a view into its reusable send-queue
-    // buffer (WebSocket.send would have copied it synchronously). The
-    // uplink POST is async, and the buffer is reused immediately — so
-    // snapshot the bytes now or the wire stream comes out scrambled.
+    // buffer. Our write() enqueues onto the session's ws.send (which
+    // snapshots the bytes per the WebSocket spec) — but the write
+    // promise may run its send after we return, so snapshot now anyway
+    // to keep the wire stream in order.
     const bytes = new Uint8Array(chunk.byteLength);
     bytes.set(chunk);
-    // A failed POST kills the channel, which closes the socket here.
+    // A failed write kills the channel, which closes the socket here.
     this._ch.write(bytes).catch(() => {});
   }
 
@@ -135,8 +136,13 @@ if (!cfg.streamUrl) {
   throw new Error('no VNC available'); // stop the module
 }
 
-const ch = new DuplexChannel(cfg.streamUrl, cfg.inputUrl);
+const ch = new DuplexChannel(cfg.streamUrl);
 window.__vncChannel = ch; // e2e hook
+
+// A session that landed on the HTTP/1.1 leg instead of HTTP/2 is
+// visible at a glance (keepalive-driven liveness, per-origin
+// connection budget) — see doc/TRANSPORT.md.
+const protoMarker = ch.http2 ? '' : ' · h1';
 
 // RFB's constructor kicks the connection off (state 'connecting' →
 // _connect → Websock.attach), so construct = connect.
@@ -158,14 +164,13 @@ window.__rfb = rfb; // e2e hook
 
 rfb.addEventListener('connect', () => {
   clearRetries();
-  vncStatus('Connected.', { reconnect: false });
+  vncStatus('Connected.' + protoMarker, { reconnect: false });
 });
 rfb.addEventListener('disconnect', (e) => {
   // noVNC does not auto-reconnect (disconnected is a permanent
   // state), so the page retries itself instead (bounded — retry.js)
   // and offers a manual reconnect once the budget is spent. A
-  // tunnel-level SESSION_ERROR frame (wire protocol v2) carries the
-  // server's reason.
+  // failed session (1011 close) carries the server's reason.
   const clean = e.detail.clean;
   const why = ch.terminalMessage ? ': ' + ch.terminalMessage : '';
   if (clean) {

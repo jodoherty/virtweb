@@ -25,5 +25,5 @@ RUN apt-get update && \
 USER virtweb
 WORKDIR /home/virtweb
 COPY --from=build --chown=virtweb /out/virtweb /usr/local/bin/virtweb
-EXPOSE 8080
+EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/virtweb"]

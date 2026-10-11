@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jodoherty/virtweb/internal/store"
+	"github.com/jodoherty/virtweb/internal/ws"
 )
 
 // newAPI builds a test API with the session caps set explicitly (New
@@ -29,59 +32,53 @@ func newAPI(t *testing.T, maxConsoles, maxTunnels int) (*httptest.Server, string
 }
 
 // TestTunnelSessionLimit: the (max+1)th concurrent tunnel session is
-// refused with 429 while the first max stay open.
+// refused (429 pre-upgrade) while the first max stay open.
 func TestTunnelSessionLimit(t *testing.T) {
 	ts, id := newAPI(t, 4, 2)
 	stream := fmt.Sprintf("%s/api/servers/%s/vms/vm1/tunnel/stream?display=spice", ts.URL, id)
 
-	open := []*http.Response{}
+	open := make([]*ws.Session, 0, 2)
 	for i := 0; i < 3; i++ {
-		res, err := http.Get(stream)
-		if err != nil {
-			t.Fatal(err)
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		s, err := ws.Dial(ctx, wsURL(stream))
+		cancel()
 		if i < 2 {
-			if res.StatusCode != http.StatusOK {
-				t.Fatalf("session %d status = %d, want 200", i, res.StatusCode)
+			if err != nil {
+				t.Fatalf("session %d dial: %v, want open", i, err)
 			}
-			open = append(open, res)
-		} else {
-			if res.StatusCode != http.StatusTooManyRequests {
-				t.Fatalf("session %d status = %d, want 429", i, res.StatusCode)
-			}
-			res.Body.Close()
+			open = append(open, s)
+		} else if err == nil {
+			s.Close()
+			t.Fatalf("session %d dialed, want a 429 rejection", i)
 		}
 	}
-	for _, res := range open {
-		res.Body.Close()
+	for _, s := range open {
+		s.Close()
 	}
 }
-
 // TestConsoleSessionLimit: same for consoles, across distinct
 // (server, VM) keys.
 func TestConsoleSessionLimit(t *testing.T) {
 	ts, id := newAPI(t, 2, 4)
 
-	open := []*http.Response{}
+	open := make([]*ws.Session, 0, 2)
 	for i, name := range []string{"vm1", "vm2", "vm3"} {
-		res, err := http.Get(fmt.Sprintf("%s/api/servers/%s/vms/%s/console/stream", ts.URL, id, name))
-		if err != nil {
-			t.Fatal(err)
-		}
+		stream := fmt.Sprintf("%s/api/servers/%s/vms/%s/console/stream", ts.URL, id, name)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		s, err := ws.Dial(ctx, wsURL(stream))
+		cancel()
 		if i < 2 {
-			if res.StatusCode != http.StatusOK {
-				t.Fatalf("console %s status = %d, want 200", name, res.StatusCode)
+			if err != nil {
+				t.Fatalf("console %s dial: %v, want open", name, err)
 			}
-			open = append(open, res)
-		} else {
-			if res.StatusCode != http.StatusTooManyRequests {
-				t.Fatalf("console %s status = %d, want 429", name, res.StatusCode)
-			}
-			res.Body.Close()
+			open = append(open, s)
+		} else if err == nil {
+			s.Close()
+			t.Fatalf("console %s dialed, want a 429 rejection", name)
 		}
 	}
-	for _, res := range open {
-		res.Body.Close()
+	for _, s := range open {
+		s.Close()
 	}
 }
 

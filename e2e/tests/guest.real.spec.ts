@@ -88,7 +88,7 @@ test.describe.serial('libvirt host guest (TCG)', () => {
   test('serial console: login and a command round-trip', async ({ page }) => {
     test.setTimeout(420_000);
     await page.goto(`${url()}/servers/${serverId}/vms/${GUEST}/console`);
-    await expect(page.locator('#console-status')).toHaveText('Connected.');
+    await expect(page.locator('#console-status')).toHaveText(/^Connected\./);
     await page.locator('#term').click();
 
     // The terminal buffer is the ground truth: wait until the serial

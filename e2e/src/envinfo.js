@@ -2,6 +2,14 @@
 // custom reporter.
 import { read } from './env/manifest.js';
 
+// The env runs over TLS against a fixture certificate. Every spec
+// imports this module first (requireEnv), so disabling verification
+// here — before the spec's first fetch/WebSocket use — covers the
+// whole test process. (Browsers are covered separately by
+// Playwright's ignoreHTTPSErrors in playwright.config.ts.)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED =
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? '0';
+
 // requireEnv loads the manifest or fails with setup instructions.
 // Attach mode: tests attach to the persistent env and never tear it down.
 // Own mode (E2E_ENV=own): globalSetup brings the env up per run.

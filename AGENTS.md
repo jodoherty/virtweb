@@ -15,8 +15,8 @@ files, never the README:
   managing VMs, the HTTP API, console/VNC/SPICE, offline demo mode
 - `doc/SECURITY.md` — the security model, TLS/mTLS and the PROXY
   protocol, reverse-proxy deployment notes
-- `doc/TRANSPORT.md` — the framed stream transport (wire format v1 +
-  v2) and why it exists
+- `doc/TRANSPORT.md` — the WebSocket session transport (the two legs,
+  terminal close codes, keepalives/liveness) and why it exists
 - `doc/TESTS.md` — the test evidence and the release gate
 
 ## What this repository is
@@ -33,10 +33,18 @@ Hard constraints (keep every change compliant):
   packages outside `e2e/`.
 - **Single embedded binary:** the web frontend is baked in via
   `go:embed` (`web/`).
-- **No WebSocket:** the console/VNC/SPICE transport is plain-HTTP
-  streams — a chunked, flushed GET (browser `ReadableStream`) plus
-  small, ordered POSTs — speaking the framed wire protocol documented
-  in `doc/TRANSPORT.md`.
+- **Transport:** the console/VNC/SPICE streams are WebSocket sessions
+  (RFC 6455), one per logical session — no app-level multiplexing,
+  no custom framing. The server speaks them over the vendored, stdlib-only
+  `internal/ws` package (a single-file drop-in, see its license); the
+  browser drives them with the native `WebSocket`. HTTP/2 extended
+  CONNECT (RFC 8441) is the primary leg, the HTTP/1.1 Upgrade the
+  fallback. Details: `doc/TRANSPORT.md`.
+- **TLS is always on.** virtweb serves TLS unconditionally (the
+  WebSocket transport requires it; browsers negotiate h2 over ALPN on
+  TLS listeners only). When no certificate is supplied it generates an
+  ephemeral self-signed dev certificate (loud warning) — production
+  always supplies real certificates.
 - **SSH layer:** always exec the system `ssh` (OpenSSH ≥ 9.x).
 - **`e2e/`** is a self-contained Node/Playwright project; nodejs
   artifacts stay inside it. Its own rules live in `e2e/AGENTS.md`.

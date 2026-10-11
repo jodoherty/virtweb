@@ -6,17 +6,23 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"embed"
 	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -59,26 +65,28 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "address to listen on")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for persistent data (servers.json)")
 	backendKind := flag.String("backend", "ssh", "backend: ssh (production) or stub (offline demo/test mode)")
-	tlsEnable := flag.Bool("tls", false, "serve HTTPS (requires -tls-cert and -tls-key)")
-	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
-	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
-	clientCA := flag.String("client-ca", "", "PEM CA bundle; requires -tls and enables mTLS (client certificates are required and verified)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM); omit for an ephemeral dev self-signed certificate (never do this in production)")
+	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM); omit with -tls-cert for the dev self-signed certificate")
+	clientCA := flag.String("client-ca", "", "PEM CA bundle; enables mTLS (client certificates are required and verified). Client auth is the default: either this or -no-auth must be given")
+	noAuth := flag.Bool("no-auth", false, "run WITHOUT client certificate authentication (mTLS). An explicit opt-out: the default requires -client-ca, so passing this is how you deliberately serve without client auth")
 	proxyProto := flag.Bool("proxy-protocol", false, "expect a PROXY protocol (v1/v2) header on each connection, e.g. behind a Traefik L4 pass-through router")
 	proxyFrom := flag.String("proxy-from", "", "with -proxy-protocol: comma-separated source IPs/CIDRs of the proxy; connections from any other source are rejected")
 	hostKeyChecking := flag.String("host-key-checking", "accept-new", "ssh -o StrictHostKeyChecking value: accept-new (default: trust first contact, verify afterwards), yes, no (known_hosts only), or off")
-	keepalive := flag.Duration("keepalive", api.DefaultKeepalive, "stream keepalive: emit an idle-keepalive frame on console/tunnel streams after this much silence (0 disables); keep it well under your reverse proxy's idle/read timeout")
+	keepalive := flag.Duration("keepalive", api.DefaultKeepalive, "HTTP/1.1 session keepalive window: probe a silent stream session with a ping after this much silence (0 disables); keep it well under your reverse proxy's idle/read timeout. HTTP/2 sessions run with the window zero (streams cannot enforce deadlines); liveness there is the transport's job")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("virtweb " + version)
 		return
 	}
-
-	if *clientCA != "" && !*tlsEnable {
-		log.Fatal("-client-ca requires -tls")
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatal("-tls-cert and -tls-key must be given together")
 	}
-	if *tlsEnable && (*tlsCert == "" || *tlsKey == "") {
-		log.Fatal("-tls requires -tls-cert and -tls-key")
+	// Client authentication is the default; the choice must be stated
+	// on the command line (so it is visible in the process listing and
+	// the logs), not be a silent fallback.
+	if err := validateAuthFlags(*clientCA, *noAuth); err != nil {
+		log.Fatal(err)
 	}
 	if *proxyProto && *proxyFrom == "" {
 		log.Fatal("-proxy-protocol requires -proxy-from (the proxy's source IP/CIDR); without it, any peer on the network could forge the PROXY header")
@@ -88,6 +96,10 @@ func main() {
 	default:
 		log.Fatalf("-host-key-checking must be one of: accept-new, yes, no, off (got %q)", *hostKeyChecking)
 	}
+
+	// Guarantee the HTTP/2 extended-CONNECT routing before anything
+	// listens (see ensureExtendedConnect).
+	ensureExtendedConnect()
 
 	// Frontend is served straight from the embedded filesystem.
 	webRoot, err := fs.Sub(webFS, "web")
@@ -147,9 +159,24 @@ func main() {
 	}
 
 	// Listener pipeline: TCP accept -> [PROXY header] -> [TLS/mTLS] ->
-	// HTTP. The PROXY header rides outside TLS (the L4 proxy prepends
-	// it to the raw stream); TLS (and mTLS client-cert auth) is
-	// terminated by virtweb itself.
+	// HTTP. virtweb always serves TLS: the WebSocket transport
+	// requires it (browsers negotiate HTTP/2 over ALPN only on TLS
+	// listeners, and Go's net/http enables h2 automatically on the TLS
+	// server). The PROXY header rides outside TLS (the L4 proxy
+	// prepends it to the raw stream); TLS (and mTLS client-cert auth)
+	// is terminated by virtweb itself.
+	cfg, mTLS, err := tlsConfig(*tlsCert, *tlsKey, *clientCA)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !mTLS && *tlsCert == "" {
+		log.Printf("WARNING: serving with an EPHEMERAL SELF-SIGNED certificate (no -tls-cert/-tls-key). Development only — production must use real certificates (e.g. Let's Encrypt; see doc/USAGE.md).")
+	}
+	if !mTLS {
+		log.Printf("WARNING: -no-auth: client certificate authentication is DISABLED — any TLS client can reach the API. Production must pass -client-ca to require mTLS.")
+	}
+	srv.TLSConfig = cfg
+
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
@@ -160,30 +187,16 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	if *tlsEnable {
-		cfg, err := tlsConfigFromFiles(*tlsCert, *tlsKey, *clientCA)
-		if err != nil {
+	if *clientCA != "" {
+		log.Printf("virtweb %s listening on https://%s (mTLS: client certificates required; data dir: %s)", version, *addr, *dataDir)
+	} else {
+		log.Printf("virtweb %s listening on https://%s (no client auth, -no-auth; data dir: %s)", version, *addr, *dataDir)
+	}
+	go func() {
+		if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
-		srv.TLSConfig = cfg
-		if *clientCA != "" {
-			log.Printf("virtweb %s listening on https://%s (mTLS: client certificates required; data dir: %s)", version, *addr, *dataDir)
-		} else {
-			log.Printf("virtweb %s listening on https://%s (data dir: %s)", version, *addr, *dataDir)
-		}
-		go func() {
-			if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
-				log.Fatal(err)
-			}
-		}()
-	} else {
-		log.Printf("virtweb %s listening on http://%s (data dir: %s)", version, *addr, *dataDir)
-		go func() {
-			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-				log.Fatal(err)
-			}
-		}()
-	}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -204,6 +217,92 @@ func main() {
 //        inline scripts (data-confirm + ui.js instead of onsubmit) and
 //        no eval; img-src allows data:/blob: for the VNC/SPICE viewers'
 //        cursor and playback images.
+// ensureExtendedConnect re-executes the process with
+// GODEBUG=http2xconnect=1 when the setting is not already present.
+//
+// The stdlib HTTP/2 server does not route extended CONNECT (RFC 8441)
+// by default: it is gated behind that GODEBUG setting, read once at
+// process start, and without it the server never advertises the
+// capability — so browsers cannot carry their WebSocket sessions on
+// the h2 connection and every session degrades to the HTTP/1.1
+// Upgrade leg (which works, but with keepalive-driven liveness and
+// per-origin connection budgets instead of transport-level
+// keepalive). The setting cannot be flipped after net/http's init,
+// and h2 is the designed primary path, so the binary guarantees its
+// own invariant: one re-exec with the setting appended to GODEBUG,
+// then main runs as usual. (The h1 warning on any session that still
+// lands on the Upgrade leg is the canary if this ever regresses.)
+func ensureExtendedConnect() {
+	const setting = "http2xconnect=1"
+	godebug := os.Getenv("GODEBUG")
+	for _, part := range strings.Split(godebug, ",") {
+		if strings.TrimSpace(part) == setting {
+			return // already set (inherited or explicit)
+		}
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		log.Fatal("cannot re-exec for HTTP/2 extended CONNECT: " + err.Error())
+	}
+	cmd := exec.Command(self, os.Args[1:]...)
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GODEBUG=") {
+			env = append(env, kv)
+		}
+	}
+	if godebug != "" {
+		env = append(env, "GODEBUG="+godebug+","+setting)
+	} else {
+		env = append(env, "GODEBUG="+setting)
+	}
+	cmd.Env = env
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+
+	log.Printf("virtweb: re-executing with GODEBUG=%s (HTTP/2 extended CONNECT routing)",
+		"http2xconnect=1")
+	if err := cmd.Start(); err != nil {
+		log.Fatal("re-exec for HTTP/2 extended CONNECT failed: " + err.Error())
+	}
+
+	// Forward termination signals to the child and exit with its
+	// status: the parent exists only to carry the environment.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		for s := range sigs {
+			_ = cmd.Process.Signal(s)
+		}
+	}()
+	err = cmd.Wait()
+	state := cmd.ProcessState
+	if err != nil && state == nil {
+		log.Fatal("re-exec'd virtweb: " + err.Error())
+	}
+	code := 0
+	if state != nil && !state.Success() {
+		code = 1
+		if st, ok := state.Sys().(syscall.WaitStatus); ok && st.Exited() {
+			code = st.ExitStatus()
+		}
+	}
+	os.Exit(code)
+}
+
+// validateAuthFlags enforces the secure-by-default posture: client
+// certificate authentication is the default, so exactly one of
+// -client-ca (mTLS) and -no-auth (explicit opt-out) must be given.
+func validateAuthFlags(clientCA string, noAuth bool) error {
+	if clientCA != "" && noAuth {
+		return errors.New("-client-ca and -no-auth are mutually exclusive: -client-ca enables mTLS, -no-auth disables client authentication")
+	}
+	if clientCA == "" && !noAuth {
+		return errors.New("client certificate authentication is required: pass -client-ca (PEM CA bundle) for mTLS, or -no-auth to explicitly run without client authentication")
+	}
+	return nil
+}
+
 func securityHeaders(next http.Handler) http.Handler {
 	csp := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; " +
@@ -217,31 +316,65 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// tlsConfigFromFiles builds the server TLS config. When caFile is
-// non-empty, mTLS is enabled: clients must present a certificate
-// signed by one of the CAs in caFile (RequireAndVerifyClientCert).
-func tlsConfigFromFiles(certFile, keyFile, caFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load -tls-cert/-tls-key: %w", err)
-	}
+// tlsConfig builds the server TLS config. With certFile/keyFile the
+// pair is loaded from disk; without them an ephemeral self-signed
+// development certificate is generated (a loud warning is logged at
+// startup). When caFile is non-empty, mTLS is enabled: clients must
+// present a certificate signed by one of the CAs in caFile
+// (RequireAndVerifyClientCert). mTLS reports true when enabled.
+func tlsConfig(certFile, keyFile, caFile string) (*tls.Config, bool, error) {
 	cfg := &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
+		MinVersion: tls.VersionTLS12,
+	}
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, false, fmt.Errorf("load -tls-cert/-tls-key: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	} else {
+		cfg.Certificates = []tls.Certificate{devCert()}
 	}
 	if caFile != "" {
 		pem, err := os.ReadFile(caFile)
 		if err != nil {
-			return nil, fmt.Errorf("read -client-ca: %w", err)
+			return nil, false, fmt.Errorf("read -client-ca: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, errors.New("no CA certificates found in -client-ca")
+			return nil, false, errors.New("no CA certificates found in -client-ca")
 		}
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+		return cfg, true, nil
 	}
-	return cfg, nil
+	return cfg, false, nil
+}
+
+// devCert generates an ephemeral self-signed certificate for
+// development (localhost + loopback). It exists so the run-and-go
+// demo keeps working under the TLS-required design and exercises the
+// real TLS/h2 code path; production always supplies real certificates.
+func devCert() tls.Certificate {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "virtweb (dev self-signed)"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
 // subVendored strips the third-party/<dir> prefix from an embedded

@@ -1,107 +1,125 @@
 package api
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jodoherty/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/ws"
 )
 
-// addTestServer registers a server and returns its ID.
-func addTestServer(t *testing.T, ts *httptest.Server) string {
-	t.Helper()
-	res, err := http.Post(ts.URL+"/api/servers", "application/json",
-		jsonBody(virt.Server{Name: "alpha", User: "u", Host: "h"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("add status = %d", res.StatusCode)
-	}
-	var srv virt.Server
-	json.NewDecoder(res.Body).Decode(&srv)
-	return srv.ID
-}
-
+// TestConsoleStreamRoundTrip: dial, the browser's HEAD preflight
+// reports the session in use, a keystroke round-trips through the
+// echo backend, the session closes cleanly (1000), and the server
+// drops the session afterwards.
 func TestConsoleStreamRoundTrip(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
 	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id)
+	statusURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/status", id)
 
-	client := &http.Client{}
-	res, err := client.Get(streamURL)
+	s := dialStream(t, streamURL)
+	// While the session is live the preflight reports conflict.
+	if code := preflight(t, streamURL); code != http.StatusConflict {
+		t.Fatalf("preflight while open = %d, want 409", code)
+	}
+	// And the status endpoint agrees.
+	if !statusOpen(t, statusURL) {
+		t.Fatal("status = false, want open while the session is live")
+	}
+
+	// fakeBackend.Console echoes stdin to stdout.
+	if err := s.WriteBinary([]byte("ping\n")); err != nil {
+		t.Fatal(err)
+	}
+	op, data, err := s.ReadMessage()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if op != ws.OpBinary || string(data) != "ping\n" {
+		t.Fatalf("round-trip = %q (op %d), want ping", data, op)
+	}
+
+	// Clean close: 1000 from the client; the read then reports a clean
+	// end (io.EOF).
+	if err := s.Shutdown(1000, "bye"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = s.ReadMessage(); !errors.Is(err, io.EOF) {
+		t.Fatalf("clean-end read = %v, want io.EOF", err)
+	}
+	s.Close()
+
+	waitFor(t, 3*time.Second, func() bool {
+		return preflight(t, streamURL) == http.StatusOK
+	})
+	if statusOpen(t, statusURL) {
+		t.Fatal("session not dropped after the client closed")
+	}
+}
+
+// TestConsoleStreamCrossOrigin: a browser page from a different origin
+// cannot open a session (cross-site WebSocket hijacking): mTLS
+// authenticates the browser's connection, not the page, so the
+// handshake's Origin must be same-origin. The reject happens before the
+// upgrade — no session is opened.
+func TestConsoleStreamCrossOrigin(t *testing.T) {
+	ts, _, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id)
+
+	// A raw (non-upgrade-aware) client sends the handshake headers; a
+	// cross-origin Origin must be refused with 403, not upgraded.
+	req, _ := http.NewRequest(http.MethodGet, streamURL, nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Origin", "http://evil.example")
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("stream status = %d", res.StatusCode)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin handshake = %d, want 403", res.StatusCode)
 	}
+	// No session was opened.
+	if got := preflight(t, streamURL); got != http.StatusOK {
+		t.Fatalf("preflight = %d, want 200 (no session opened)", got)
+	}
+}
 
-	// A second concurrent stream for the same VM must be rejected.
-	other, err := client.Get(streamURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	other.Body.Close()
-	if other.StatusCode != http.StatusConflict {
-		t.Fatalf("second stream status = %d, want 409", other.StatusCode)
-	}
+// TestConsoleStreamConflict: a second concurrent session for the same
+// (server, VM) is refused — the dial fails (409 pre-upgrade) and the
+// preflight reports it.
+func TestConsoleStreamConflict(t *testing.T) {
+	ts, _, _ := newTestAPI(t)
+	id := addTestServer(t, ts)
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id)
 
-	// Read the stream in the background; it ends when the client
-	// connection (below) is closed. The final read errors because we
-	// close the connection ourselves — that is fine, only the bytes
-	// received matter.
-	out := make(chan []byte, 1)
-	go func() {
-		buf, err := io.ReadAll(res.Body)
-		if err != nil && len(buf) == 0 {
-			t.Errorf("read stream: %v", err)
-		}
-		out <- buf
-	}()
+	first := dialStream(t, streamURL)
+	defer first.Close()
 
-	// Send input as a DATA frame: fakeBackend.Console echoes stdin to stdout.
-	inRes, err := client.Post(ts.URL+fmt.Sprintf("/api/servers/%s/vms/vm1/console/input", id),
-		"application/octet-stream",
-		bytes.NewReader(encodeTestFrame(t, frameData, []byte("ping"))))
-	if err != nil {
-		t.Fatal(err)
+	if code := preflight(t, streamURL); code != http.StatusConflict {
+		t.Fatalf("preflight = %d, want 409", code)
 	}
-	if inRes.StatusCode != http.StatusNoContent {
-		t.Fatalf("input status = %d", inRes.StatusCode)
-	}
-
-	// Closing the client stream disconnects the request, which cancels
-	// the backend context and ends the session.
-	res.Body.Close()
-	buf := <-out
-	frames, rest, err := framesFrom(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rest) != 0 || len(frames) != 2 {
-		t.Fatalf("streamed frames = %+v rest=%d, want HELLO + DATA", frames, len(rest))
-	}
-	if frames[0].tag != frameHello ||
-		!bytes.Equal(frames[0].payload, []byte{frameVersion, helloFlags}) {
-		t.Fatalf("first frame = %+v, want HELLO", frames[0])
-	}
-	if frames[1].tag != frameData || string(frames[1].payload) != "ping" {
-		t.Fatalf("second frame = %+v, want DATA ping", frames[1])
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := ws.Dial(ctx, wsURL(streamURL)); err == nil {
+		t.Fatal("second concurrent session dial succeeded, want a 409 rejection")
 	}
 }
 
 // TestConsoleStreamTerminalError: a session that fails server-side
-// (the backend call returns an error) ends with a SESSION_ERROR frame
-// carrying the server's message, then the stream closes cleanly.
+// ends with close code closeSessionError and the server's message as
+// the close reason.
 func TestConsoleStreamTerminalError(t *testing.T) {
 	ts, ff, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
@@ -112,37 +130,21 @@ func TestConsoleStreamTerminalError(t *testing.T) {
 		consoleErr: errors.New("domain 'vm1' is not running"),
 	}
 
-	res, err := http.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id))
-	if err != nil {
-		t.Fatal(err)
+	s := dialStream(t, ts.URL+fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id))
+	_, _, err := s.ReadMessage()
+	var closeErr *ws.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("terminal read = %v, want *ws.CloseError", err)
 	}
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("stream status = %d", res.StatusCode)
+	if closeErr.Code != closeSessionError || closeErr.Reason != "domain 'vm1' is not running" {
+		t.Fatalf("terminal = %d %q, want %d with the message", closeErr.Code, closeErr.Reason, closeSessionError)
 	}
-	// The stream ends server-side: no client disconnect involved.
-	buf, rerr := io.ReadAll(res.Body)
-	if rerr != nil {
-		t.Fatalf("read stream: %v", rerr)
-	}
-	frames, rest, ferr := framesFrom(buf)
-	if ferr != nil {
-		t.Fatal(ferr)
-	}
-	if len(rest) != 0 {
-		t.Fatalf("leftover bytes: %d", len(rest))
-	}
-	if len(frames) != 2 {
-		t.Fatalf("frames = %+v, want HELLO + SESSION_ERROR", frames)
-	}
-	if frames[1].tag != frameError ||
-		string(frames[1].payload) != "domain 'vm1' is not running" {
-		t.Fatalf("terminal frame = %+v, want SESSION_ERROR with the message", frames[1])
-	}
+	s.Close()
 }
 
 // TestConsoleStreamTerminalCleanEnd: a session that ends cleanly
-// (the backend returns nil) ends with a SESSION_END frame as the last
-// frame.
+// (the backend returns nil) delivers its final output, then closes
+// with 1000 — a clean end the client observes as io.EOF.
 func TestConsoleStreamTerminalCleanEnd(t *testing.T) {
 	ts, ff, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
@@ -151,27 +153,18 @@ func TestConsoleStreamTerminalCleanEnd(t *testing.T) {
 		consoleClean: true,
 	}
 
-	res, err := http.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id))
+	s := dialStream(t, ts.URL+fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id))
+	op, data, err := s.ReadMessage()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read: %v", err)
 	}
-	buf, rerr := io.ReadAll(res.Body)
-	if rerr != nil {
-		t.Fatalf("read stream: %v", rerr)
+	if op != ws.OpBinary || string(data) != "banner\n" {
+		t.Fatalf("data = %q (op %d), want banner", data, op)
 	}
-	frames, rest, ferr := framesFrom(buf)
-	if ferr != nil {
-		t.Fatal(ferr)
+	if _, _, err = s.ReadMessage(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal read = %v, want io.EOF (clean 1000 end)", err)
 	}
-	if len(rest) != 0 || len(frames) != 3 {
-		t.Fatalf("frames = %+v rest=%d, want HELLO + DATA + SESSION_END", frames, len(rest))
-	}
-	if frames[1].tag != frameData || string(frames[1].payload) != "banner\n" {
-		t.Fatalf("data frame = %+v, want DATA banner", frames[1])
-	}
-	if frames[2].tag != frameEnd || len(frames[2].payload) != 0 {
-		t.Fatalf("terminal frame = %+v, want SESSION_END (empty)", frames[2])
-	}
+	s.Close()
 }
 
 // TestConsoleStatus: the console-in-use indicator — closed until a
@@ -180,80 +173,71 @@ func TestConsoleStreamTerminalCleanEnd(t *testing.T) {
 func TestConsoleStatus(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
 	id := addTestServer(t, ts)
+	streamURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id)
 	statusURL := ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/status", id)
 
-	res, err := http.Get(statusURL)
+	if statusOpen(t, statusURL) {
+		t.Fatal("open = true, want false before any session")
+	}
+
+	s := dialStream(t, streamURL)
+	if !statusOpen(t, statusURL) {
+		t.Fatal("open = false, want true while the session is live")
+	}
+
+	// Client goes away (no polite close): the server notices the
+	// transport died and drops the session.
+	s.Close()
+	waitFor(t, 3*time.Second, func() bool { return !statusOpen(t, statusURL) })
+	if statusOpen(t, statusURL) {
+		t.Fatal("session not dropped after the client went away")
+	}
+
+	// Unknown server -> 404.
+	res, err := http.Get(ts.URL + "/api/servers/nope/vms/x/console/status")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", res.StatusCode)
-	}
-	var out map[string]bool
-	json.NewDecoder(res.Body).Decode(&out)
-	res.Body.Close()
-	if out["open"] {
-		t.Fatalf("open = %v, want false", out)
-	}
-
-	// open a session
-	client := &http.Client{}
-	stream, err := client.Get(ts.URL + fmt.Sprintf("/api/servers/%s/vms/vm1/console/stream", id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, _ = http.Get(statusURL)
-	json.NewDecoder(res.Body).Decode(&out)
-	res.Body.Close()
-	if !out["open"] {
-		t.Fatalf("open = %v, want true while the stream is live", out)
-	}
-
-	// client goes away; wait for the server to drop the session
-	stream.Body.Close()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		res, _ = http.Get(statusURL)
-		json.NewDecoder(res.Body).Decode(&out)
-		res.Body.Close()
-		if !out["open"] {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if out["open"] {
-		t.Fatalf("open = %v, want false after the stream closed", out)
-	}
-
-	// unknown server -> 404
-	res, _ = http.Get(ts.URL + "/api/servers/nope/vms/x/console/status")
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown server status = %d, want 404", res.StatusCode)
 	}
 }
 
-func TestConsoleInputWithoutSession(t *testing.T) {
+// TestConsoleStreamUnknownServer: dialing a session for a server that
+// does not exist fails (404 pre-upgrade).
+func TestConsoleStreamUnknownServer(t *testing.T) {
 	ts, _, _ := newTestAPI(t)
-	id := addTestServer(t, ts)
-	res, err := http.Post(ts.URL+fmt.Sprintf("/api/servers/%s/vms/vm1/console/input", id),
-		"application/octet-stream", strings.NewReader("x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("input status = %d, want 404", res.StatusCode)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := ws.Dial(ctx, wsURL(ts.URL+"/api/servers/nope/vms/vm1/console/stream")); err == nil {
+		t.Fatal("dial for an unknown server succeeded, want a 404 rejection")
 	}
 }
 
-func TestConsoleStreamUnknownServer(t *testing.T) {
-	ts, _, _ := newTestAPI(t)
-	res, err := http.Get(ts.URL + "/api/servers/nope/vms/vm1/console/stream")
+func statusOpen(t *testing.T, statusURL string) bool {
+	t.Helper()
+	res, err := http.Get(statusURL)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("status: %v", err)
 	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("stream status = %d, want 404", res.StatusCode)
+	defer res.Body.Close()
+	var out map[string]bool
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("status body: %v", err)
 	}
+	return out["open"]
+}
+
+// waitFor polls fn until it reports true or the deadline passes.
+func waitFor(t *testing.T, d time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting: " + t.Name())
 }

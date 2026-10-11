@@ -23,9 +23,9 @@ type fakeBackend struct {
 	vms     []virt.VM
 	pingErr error
 
-	// session terminal-state injection (wire protocol v2 tests):
+	// session terminal-state injection (the 1011 close tests):
 	// consoleErr/tunnelErr make the session fail server-side;
-	// consoleClean/tunnelClean make it end cleanly after one DATA
+	// consoleClean/tunnelClean make it end cleanly after one binary
 	// write.
 	consoleErr   error
 	tunnelErr    error

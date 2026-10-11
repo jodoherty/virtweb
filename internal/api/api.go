@@ -15,6 +15,7 @@ import (
 
 	"github.com/jodoherty/virtweb/internal/store"
 	"github.com/jodoherty/virtweb/internal/virt"
+	"github.com/jodoherty/virtweb/internal/ws"
 )
 
 // BackendFactory creates (or returns a cached) backend for a server.
@@ -24,9 +25,9 @@ type BackendFactory interface {
 
 // API is the REST API server.
 type API struct {
-	st       *store.Store
-	factory  BackendFactory
-	mu       sync.Mutex
+	st      *store.Store
+	factory BackendFactory
+	mu      sync.Mutex
 	backends map[string]virt.Backend
 	conMu    sync.Mutex
 	consoles map[string]*pipeSession
@@ -36,22 +37,33 @@ type API struct {
 	// cap: each session holds a remote ssh process). 429 when reached.
 	maxConsoles int
 	maxTunnels  int
-	// keepalive is the idle interval after which stream sessions emit
-	// KEEPALIVE frames (wire protocol v1, see frame.go); 0 disables.
+	// keepalive is the h1 session keepalive window (-keepalive flag,
+	// 0 disables); see stream.go.
 	keepalive time.Duration
+	// upH1 serves the plain HTTP/1.1 Upgrade leg (keepalive window on:
+	// a hijacked net.Conn always enforces deadlines). upH2 serves the
+	// HTTP/2 extended-CONNECT leg, where the streams cannot enforce
+	// deadlines, so both windows are zero — the library refuses a
+	// nonzero window there (see stream.go).
+	// The origin policy is the library default: strict same-origin for
+	// requests that carry an Origin header (a cross-origin browser is
+	// the cross-site WebSocket hijacking case — mTLS authenticates the
+	// browser, not the page), no Origin allowed (tooling).
+	upH1   *ws.Upgrader
+	upH2   *ws.Upgrader
+	h1mu   sync.Mutex
+	h1warn map[string]*h1Warn
 }
 
 // Option configures an API.
 type Option func(*API)
 
-// WithKeepalive sets the stream keepalive interval (see frame.go);
-// 0 disables idle keepalives.
 // DefaultKeepalive is the stream keepalive interval used when no
-// WithKeepalive option is given (see frame.go).
-const DefaultKeepalive = defaultKeepalive
+// WithKeepalive option is given (see stream.go).
+const DefaultKeepalive = 15 * time.Second
 
-// WithKeepalive sets the stream keepalive interval (see frame.go);
-// 0 disables idle keepalives.
+// WithKeepalive sets the HTTP/1.1 session keepalive window (see
+// stream.go); 0 disables idle keepalives.
 func WithKeepalive(d time.Duration) Option {
 	return func(a *API) { a.keepalive = d }
 }
@@ -64,10 +76,18 @@ func New(st *store.Store, factory BackendFactory, opts ...Option) *API {
 		tunnels:     map[string]*pipeSession{},
 		maxConsoles: 64,
 		maxTunnels:  64,
-		keepalive:   defaultKeepalive}
+		keepalive:   DefaultKeepalive,
+		h1warn:      map[string]*h1Warn{}}
 	for _, opt := range opts {
 		opt(a)
 	}
+	a.upH1 = ws.NewUpgrader(
+		ws.WithIdleTimeout(a.keepalive),
+		ws.WithMaxMessageSize(maxWSMessage))
+	a.upH2 = ws.NewUpgrader(
+		ws.WithIdleTimeout(0),
+		ws.WithWriteTimeout(0),
+		ws.WithMaxMessageSize(maxWSMessage))
 	return a
 }
 
@@ -101,11 +121,16 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/xml", a.handleVMXML)
 	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/{action}", a.handleVMAction)
 	mux.HandleFunc("GET /api/servers/{id}/ping", a.handlePing)
+	// Each stream endpoint serves both legs: the GET pattern takes the
+	// HTTP/1.1 Upgrade (and HEAD, which the mux folds into GET) —
+	// the latter is the browser's preflight; the CONNECT pattern takes
+	// the HTTP/2 extended-CONNECT leg (RFC 8441).
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
-	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/console/input", a.handleConsoleInput)
+	mux.HandleFunc("CONNECT /api/servers/{id}/vms/{name}/console/stream", a.handleConsoleStream)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/console/status", a.handleConsoleStatus)
 	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/tunnel/stream", a.handleTunnelStream)
-	mux.HandleFunc("POST /api/servers/{id}/vms/{name}/tunnel/input", a.handleTunnelInput)
+	mux.HandleFunc("CONNECT /api/servers/{id}/vms/{name}/tunnel/stream", a.handleTunnelStream)
+	mux.HandleFunc("GET /api/servers/{id}/vms/{name}/tunnel/status", a.handleTunnelStatus)
 	return mux
 }
 
