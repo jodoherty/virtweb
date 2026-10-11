@@ -4,7 +4,11 @@
 // (a serial console or a TCP tunnel channel):
 //
 //   downlink: the WebSocket's binary messages, surfaced as a
-//             ReadableStream
+//             ReadableStream of ArrayBuffers (binaryType
+//             "arraybuffer" — consumers that copy with
+//             Uint8Array.prototype.set must pass a typed array as the
+//             source, never the ArrayBuffer itself: V8's
+//             set(arrayBuffer) silently copies nothing)
 //   uplink:   the WritableStream we expose, each chunk sent as one
 //             binary WebSocket message
 //

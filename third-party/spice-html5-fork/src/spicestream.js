@@ -59,13 +59,18 @@ function SpiceStream(o)
     (async function() {
         try {
             for await (const value of ch.readable) {
-                // DuplexChannel yields Uint8Arrays; WebSocket 'message'
-                // events carry ArrayBuffers (binaryType "arraybuffer"),
-                // and the fork's wire reader builds DataView over them.
-                // Copy into a fresh ArrayBuffer so no shared backing
-                // buffer is ever exposed.
-                var ab = new ArrayBuffer(value.byteLength);
-                new Uint8Array(ab).set(value);
+                // DuplexChannel yields the session's binary messages —
+                // ArrayBuffers (binaryType "arraybuffer"). The fork's
+                // wire reader builds DataView over them. Copy into a
+                // fresh ArrayBuffer so no shared backing buffer is
+                // ever exposed. The copy source must be a typed array:
+                // V8's .set(arrayBuffer) silently copies nothing, which
+                // surfaced as a SPICE "magic mismatch: \u0000\u0000\u0000\u0000"
+                // (every frame read back zero-filled).
+                var src = value instanceof ArrayBuffer
+                    ? new Uint8Array(value) : value;
+                var ab = new ArrayBuffer(src.byteLength);
+                new Uint8Array(ab).set(src);
                 self._emit("message", { data: ab });
             }
             if (self.readyState !== 3) {

@@ -19,6 +19,7 @@ package stub
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strings"
@@ -638,10 +639,49 @@ func (b *Backend) shell(ctx context.Context, vm *vm, p shellProfile, in io.Reade
 	}
 }
 
-// Tunnel implements virt.Backend with a deterministic fake TCP service:
-// a small banner written in spaced chunks (so stream consumers see
-// incremental arrival, like a real tunneled service), then a raw echo
-// of everything sent in, until the session ends.
+// SPICE sniffing knobs and the canned protocol data.
+const (
+	spiceSniffWindow = time.Second            // wait for the client's opening bytes
+	spiceSniffTopUp  = 250 * time.Millisecond // wait for a split hello to arrive
+)
+
+// spiceLinkReply is a canned SPICE link reply captured verbatim from
+// QEMU 10.0 (SPICE protocol v2, magic "REDQ"): error=0, the
+// DER-encoded 1024-bit pub_key, then num_common/num_channel/caps
+// offset with the caps at offset 0xb2 (common [11], channel [15]).
+// The fork parses it, RSA-encrypts the password with the pub_key and
+// advances to the ticket phase.
+var spiceLinkReply = []byte{
+	0x52, 0x45, 0x44, 0x51, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x30, 0x81, 0x9f, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7,
+	0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x81, 0x8d, 0x00, 0x30, 0x81, 0x89, 0x02, 0x81, 0x81,
+	0x00, 0xa0, 0xeb, 0x41, 0x46, 0x9b, 0x48, 0x94, 0xb9, 0x1b, 0x01, 0x30, 0x24, 0xd7, 0xec, 0xa3,
+	0x68, 0x20, 0xf3, 0x84, 0xc6, 0x44, 0x03, 0x47, 0xfe, 0x06, 0xe8, 0x0e, 0x37, 0x0e, 0xe5, 0x87,
+	0xfc, 0xc1, 0x87, 0x58, 0x81, 0xc2, 0x29, 0xaa, 0xd3, 0x58, 0x90, 0x8c, 0x2b, 0xa5, 0x82, 0xf5,
+	0x57, 0x9e, 0x92, 0x01, 0x70, 0xb5, 0x5b, 0xb1, 0xce, 0x38, 0x13, 0xde, 0xa6, 0xa3, 0xb5, 0x5b,
+	0xfa, 0x96, 0xdf, 0x8e, 0xf1, 0x1d, 0x3d, 0x98, 0x18, 0xa7, 0x29, 0xa4, 0xa8, 0x1e, 0xff, 0xeb,
+	0x6e, 0x21, 0x97, 0x13, 0x8b, 0xf1, 0x73, 0x5a, 0xb4, 0xae, 0xf0, 0xa2, 0xd2, 0xd1, 0x09, 0x2e,
+	0xcf, 0xf9, 0xf5, 0x35, 0xfa, 0x36, 0xdf, 0xbd, 0xa3, 0xda, 0xc0, 0x40, 0xd2, 0x0a, 0x2c, 0x71,
+	0xaf, 0x6d, 0xf2, 0xa7, 0xfb, 0xf3, 0xca, 0x76, 0x20, 0x44, 0x6b, 0x80, 0xb3, 0xe3, 0xaa, 0x25,
+	0x49, 0x02, 0x03, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xb2, 0x00,
+	0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00,
+}
+
+// Tunnel implements virt.Backend with a deterministic fake TCP
+// service. It first examines the client's opening bytes to decide
+// which service to serve:
+//
+//   - SPICE (the browser fork opens one tunnel per channel, each
+//     beginning with a link hello): a canned link reply, then the
+//     ticket is rejected with PERMISSION_DENIED. The fork reports the
+//     rejection only if its wire reader received the real bytes — a
+//     corrupted downlink fails earlier with a magic mismatch — which
+//     makes the e2e SPICE page test a downlink-fidelity check.
+//   - everything else (a raw-protocol client, or a client silent for
+//     the whole sniff window): a small banner written in spaced
+//     chunks (so stream consumers see incremental arrival, like a
+//     real tunneled service), then a raw echo of everything sent in
+//     (including the sniffed bytes), until the session ends.
 func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader, out io.Writer) error {
 	if b.scenario == ScenarioSSHDown {
 		return b.dialError()
@@ -652,6 +692,13 @@ func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader,
 	if err != nil {
 		return err
 	}
+
+	inr := newChunkedIn(in)
+	head := inr.gather(16, ctx, spiceSniffWindow, spiceSniffTopUp)
+	if isSpiceHello(head) {
+		return b.spiceService(ctx, inr, out)
+	}
+
 	for _, line := range []string{
 		"stub-tunnel: ", name, " ", target, "\n", "chunk 1\n", "chunk 2\n",
 	} {
@@ -662,6 +709,13 @@ func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader,
 		case <-ctx.Done():
 			return nil
 		case <-time.After(30 * time.Millisecond):
+		}
+	}
+	if len(head) > 0 {
+		// Re-echo the bytes the sniff consumed, so raw clients see
+		// exactly what they sent.
+		if _, werr := out.Write(head); werr != nil {
+			return nil
 		}
 	}
 	if b.scenario == ScenarioTunnelDrop {
@@ -684,18 +738,138 @@ func (b *Backend) Tunnel(ctx context.Context, name, target string, in io.Reader,
 			return fmt.Errorf("stub: tunnel to %s failed (scenario tunnel-fail)", target)
 		}
 	}
-	buf := make([]byte, 4096)
 	for {
-		n, rerr := in.Read(buf)
-		if n > 0 {
-			if _, werr := out.Write(buf[:n]); werr != nil {
-				return nil
-			}
+		chunk, ok := inr.next(ctx, 0)
+		if !ok {
+			return nil
 		}
-		if rerr != nil {
+		if _, werr := out.Write(chunk); werr != nil {
 			return nil
 		}
 	}
+}
+
+// spiceService plays a minimal SPICE server: the canned link reply,
+// then a ticket rejection. Both writes only make sense to a client
+// that parsed the reply, so the fork reporting the rejection proves
+// the downlink carried the real bytes.
+func (b *Backend) spiceService(ctx context.Context, inr *chunkedIn, out io.Writer) error {
+	// The 26-byte link-header body rides behind the sniffed header
+	// (same or next chunk); consume it so the ticket is read aligned.
+	inr.gather(26, ctx, spiceSniffTopUp, spiceSniffTopUp)
+	if _, werr := out.Write(spiceLinkReply); werr != nil {
+		return nil
+	}
+	// The fork sends its ticket as one 132-byte message (4-byte
+	// header + 128-byte encrypted data) right after parsing the
+	// reply. Wait for it (its contents are never inspected).
+	inr.gather(132, ctx, 5*time.Second, spiceSniffTopUp)
+	// Reject the ticket: SPICE_LINK_ERR_PERMISSION_DENIED.
+	if _, werr := out.Write([]byte{7, 0, 0, 0}); werr != nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+	}
+	return nil
+}
+
+// isSpiceHello reports whether head is the header of a SPICE link
+// hello: magic "REDQ", protocol version 2.2, 26-byte link-header
+// body — what the fork sends on every channel.
+func isSpiceHello(head []byte) bool {
+	if len(head) < 16 {
+		return false
+	}
+	return string(head[0:4]) == "REDQ" &&
+		binary.LittleEndian.Uint32(head[4:8]) == 2 &&
+		binary.LittleEndian.Uint32(head[8:12]) == 2 &&
+		binary.LittleEndian.Uint32(head[12:16]) == 26
+}
+
+// chunkedIn reads a pipe in a background goroutine and hands chunks
+// to the (single) consumer. It exists so the consumer can time out
+// waiting for the first data (protocol sniffing) without losing
+// bytes: unread chunks wait in the channel, and bytes a gather() did
+// not take stay in rest for the next read.
+type chunkedIn struct {
+	ch   chan []byte
+	rest []byte
+}
+
+func newChunkedIn(r io.Reader) *chunkedIn {
+	c := &chunkedIn{ch: make(chan []byte, 256)}
+	go func() {
+		defer close(c.ch)
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				c.ch <- chunk
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return c
+}
+
+// next returns the next chunk, waiting at most timeout for it to
+// arrive (0 = wait until the reader is exhausted). ok is false when
+// the reader has closed or the session's context ended.
+func (c *chunkedIn) next(ctx context.Context, timeout time.Duration) ([]byte, bool) {
+	if len(c.rest) > 0 {
+		chunk := c.rest
+		c.rest = nil
+		return chunk, true
+	}
+	if timeout <= 0 {
+		select {
+		case chunk, ok := <-c.ch:
+			return chunk, ok
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+	t := time.After(timeout)
+	select {
+	case chunk, ok := <-c.ch:
+		return chunk, ok
+	case <-t:
+		return nil, false
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// gather accumulates up to n bytes: it waits firstTimeout for the
+// first byte and topUp for each subsequent one (once the client has
+// started talking, the rest follows — or the reader closes). Bytes
+// beyond n are kept for the next read.
+func (c *chunkedIn) gather(n int, ctx context.Context, firstTimeout, topUp time.Duration) []byte {
+	var out []byte
+	started := false
+	for len(out) < n {
+		d := topUp
+		if !started {
+			d = firstTimeout
+		}
+		chunk, ok := c.next(ctx, d)
+		if !ok {
+			return out
+		}
+		started = true
+		if over := len(chunk) - (n - len(out)); over > 0 {
+			c.rest = append(c.rest, chunk[n-len(out):]...)
+			chunk = chunk[:n-len(out)]
+		}
+		out = append(out, chunk...)
+	}
+	return out
 }
 
 // reply is the canned command table.

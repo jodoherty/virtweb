@@ -3,10 +3,12 @@
 //   API level:  the stream endpoints (session semantics, display
 //               resolution, scenarios)
 //   browser:    DuplexChannel driving xterm (console), noVNC and the
-//               spice-html5 fork over the tunnel (transport smoke: the
-//               stub tunnel is not a real RFB/SPICE service, so the
-//               handshake fails with a protocol error *after* bytes
-//               have flowed both ways)
+//               spice-html5 fork over the tunnel (transport smoke:
+//               the stub tunnel is not a real RFB service, and speaks
+//               just enough SPICE — canned link reply, ticket
+//               rejection — for the fork to fail only *after* its
+//               wire reader proves the downlink carries the real
+//               bytes)
 import { test, expect } from '@playwright/test';
 import { requireEnv } from '../src/envinfo.js';
 import { Api } from '../src/api.js';
@@ -349,12 +351,14 @@ test('vnc page: noVNC over the tunnel (transport smoke)', async ({ page }) => {
   await page.close();
 });
 
-test('spice page: fork over the tunnel (transport smoke)', async ({ page }) => {
-  // The fork sends its link header (uplink) right after open, and the
-  // stub tunnel's banner arrives down the session before any real
-  // SPICE reply: the client must fail with a magic mismatch, which
-  // proves both directions of the transport are live. The destination
-  // is resolved server-side from the stub VM's SpiceAddr.
+test('spice page: fork handshake reaches the ticket (downlink fidelity)', async ({ page }) => {
+  // The stub tunnel speaks just enough SPICE to be a downlink
+  // fidelity check: a canned link reply (byte-identical to a real
+  // QEMU's, zero pub_key), then a deliberate ticket rejection.
+  // The fork reports the rejection only if its wire reader received
+  // the real bytes — a corrupted downlink fails earlier with a magic
+  // mismatch. The destination is resolved server-side from the stub
+  // VM's SpiceAddr.
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
   await expect(page.locator('#spice-status')).toContainText('127.0.0.1:5991');
   // Disconnect is only on screen while a session is live: hidden before
@@ -363,9 +367,12 @@ test('spice page: fork over the tunnel (transport smoke)', async ({ page }) => {
   // share the screen).
   await expect(page.locator('#spice-disconnect')).toBeHidden();
   await page.click('button[type=submit]');
-  await expect(page.locator('#spice-status')).toContainText(/magic mismatch/, {
+  await expect(page.locator('#spice-status')).toContainText(/Permission denied/, {
     timeout: 15_000,
   });
+  // The failure is the stub's deliberate ticket rejection, not a
+  // corrupted downlink.
+  await expect(page.locator('#spice-status')).not.toHaveText(/magic mismatch/);
   // A failed SPICE connect offers Reconnect.
   await expect(page.locator('#spice-reconnect')).toBeVisible();
   await expect(page.locator('#spice-disconnect')).toBeHidden();

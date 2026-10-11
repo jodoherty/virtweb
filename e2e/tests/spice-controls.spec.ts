@@ -1,8 +1,9 @@
 // SPICE viewer controls: audio / guest-resize toggles and the zoom
-// dropdown. The stub's tunnel endpoint is not a real SPICE server, so
-// these specs test the page-side machinery (defaults, persistence,
-// zoom geometry) rather than a live guest; the zoom engine is
-// exercised against a synthetic canvas injected into #spice.
+// dropdown. The stub's SPICE service never completes a full
+// handshake (it rejects the ticket), so these specs test the
+// page-side machinery (defaults, persistence, zoom geometry) rather
+// than a live guest; the zoom engine is exercised against a
+// synthetic canvas injected into #spice.
 import { test, expect } from '@playwright/test';
 import { requireEnv } from '../src/envinfo.js';
 
@@ -143,8 +144,9 @@ test('zoom is not applied twice when the guest follows the resize', async ({
 
 test('guest resize request is gated on the toggle', async ({ page }) => {
   await page.goto(`${url()}/servers/${serverId}/vms/debian-dev/spice`);
-  // A live connection never happens against the stub (magic mismatch),
-  // so window.__spice stays undefined; toggling must not throw.
+  // No connect is attempted in this spec (the stub's SPICE service
+  // rejects the ticket anyway), so window.__spice stays undefined;
+  // toggling must not throw.
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.locator('#spice-guestresize').check();
