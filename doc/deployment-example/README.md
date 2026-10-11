@@ -9,24 +9,29 @@ with `-client-ca`, mTLS) itself.
 browser --TLS--> traefik :443 (raw TCP) -- virtweb :8443 (TLS/mTLS)
 ```
 
+## Quickstart (local test, works out of the box)
+
+The committed `certs/` is a throwaway **self-signed** pair for
+`virtweb.example.test`, and the stack runs with `-no-auth` — so after
+building the image, it just runs:
+
 ```sh
 # 1. build the virtweb image (from the repo root)
 docker build -t virtweb .
 
-# 2. put a real certificate for your hostname in doc/deployment-example/certs/
-#    (tls.crt, tls.key). The committed ones are 30-day throwaway
-#    placeholders so the stack runs for local testing.
-
-# 3. edit doc/deployment-example/docker-compose.yml:
-#    - real hostname (HostSNI rule)
-#    - swap -no-auth for -client-ca to enable mTLS (the production auth)
-
-# 4. from this directory
+# 2. from this directory
 docker compose up -d
 
-# 5. check it
+# 3. check it (the self-signed certificate needs -k)
 curl -fsSk 'https://virtweb.example.test/api/servers'
 ```
+
+Browsers reject the self-signed certificate until you accept it
+(Chrome: `thisisunsafe` at the warning page) or add it to the local
+trust store — expected, since it is a placeholder. For anything that
+other people use, install a real certificate
+([Server certificate](#server-certificate)) and enable mTLS (swap
+`-no-auth` for `-client-ca`; see [Authentication](#authentication)).
 
 ## Why L4, not L7
 
@@ -51,15 +56,35 @@ for the idle-timeout constraints and
   default, so `-no-auth` is an explicit opt-out; with it, only run the
   stack inside a network that is itself trusted (development/testing).
 
-## Certificate lifecycle
+## Server certificate
 
-The example mounts `./certs/`. For production-grade issuance **without
-opening an L7 exception** in the mTLS perimeter, use ACME **DNS-01**
-(certbot or lego with your DNS provider's API). A renewal job copies
-the fresh certificate into `./certs/` and runs
-`docker compose up -d --force-recreate virtweb`; virtweb restarts onto
-the new certificate and the clients re-establish their sessions
-(the transport treats the restart as a normal reconnect).
+virtweb terminates TLS itself and takes the certificate pair from
+`-tls-cert` / `-tls-key` — here, `./certs/tls.crt` + `./certs/tls.key`,
+mounted read-only into `/etc/virtweb/`. The committed pair is a
+self-signed placeholder for `virtweb.example.test`; replace it with a
+certificate for your real hostname by any of:
+
+- **Let's Encrypt (ACME, DNS-01).** The L4 pass-through keeps the edge
+  at raw TCP — there is no HTTP-01 challenge port to open, so use the
+  **DNS-01** validation (certbot or lego, with your DNS provider's
+  API). This keeps issuance entirely inside the mTLS perimeter (no
+  L7 exception at the edge). Issue to `tls.crt`/`tls.key` in
+  `./certs/` (the full chain in `tls.crt`).
+- **Manually** — from any CA (or your own internal one): issue a
+  certificate for the hostname (with a matching SAN) and drop the PEM
+  chain as `tls.crt` and the key as `tls.key` into `./certs/`.
+
+**Installing / rotating** (all options): certificate rotation is a
+restart — copy the new pair into `./certs/` and
+
+```sh
+docker compose up -d --force-recreate virtweb
+```
+
+virtweb restarts onto the new certificate; clients re-establish their
+sessions after the restart (the transport treats it as a normal
+reconnect, so the downtime is the restart itself). Schedule this on
+renewal (cron or a systemd timer) for Let's Encrypt certificates.
 
 `virtweb-data` holds the server list and per-server SSH credentials;
 it is the only state that must survive container recreations.

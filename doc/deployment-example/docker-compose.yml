@@ -11,23 +11,22 @@
 # the client certificate, or the network the browser sits in (see the
 # notes in README.md).
 #
-# Before you start:
+# Out of the box this stack runs as a local test: the committed
+# self-signed certificate in ./certs/ (CN=virtweb.example.test) and
+# -no-auth. For a real deployment:
 #
 #   - Replace `virtweb.example.test` (HostSNI router) with your real
 #     hostname.
-#   - Put a real certificate/key in ./certs/ (tls.crt, tls.key) —
-#     issued for your hostname. The committed files are placeholders
-#     that make the stack run for local testing.
-#   - For production-grade issuance without opening an L7 exception in
-#     the mTLS perimeter, use ACME **DNS-01** (certbot or lego with
-#     your DNS provider's API; a cron/systemd-timer renewal that
-#     copies the certificate into ./certs/ and `docker compose up -d
-#     --force-recreate virtweb` restarts virtweb onto it). The clients
-#     re-establish their sessions after the restart — the transport
-#     treats that as a normal reconnect.
-#   - The image is built from the repo (multi-stage Dockerfile at the
-#     repo root):   docker build -t virtweb .
-#     so the build context here is `../../` relative to this file.
+#   - Replace ./certs/tls.{crt,key} with a certificate issued for that
+#     hostname (Let's Encrypt or any manual issuance) — the options
+#     and the rotation procedure are in README.md ("Server
+#     certificate").
+#   - Swap -no-auth for -client-ca to enable mTLS (the production
+#     authentication).
+#
+# The image is built from the repo (multi-stage Dockerfile at the repo
+# root):   docker build -t virtweb .   (the build context is `../../`
+# relative to this file)
 #
 # The data dir volume holds the server list and the per-server SSH
 # credentials; it is the only state that must survive.

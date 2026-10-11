@@ -134,7 +134,10 @@ Certificate rotation is a restart: Let's Encrypt's DNS-01 keeps
 issuance inside the mTLS perimeter (no L7 exception on the edge), and
 virtweb is restarted with the new certificate. Open sessions are cut
 by the restart and re-establish — the client-side reconnect is part
-of the transport design, so the downtime is the restart itself.
+of the transport design, so the downtime is the restart itself. The
+worked procedure (self-signed default, Let's Encrypt or manual
+issuance, rotation) is in the
+[deployment example](deployment-example/README.md#server-certificate).
 
 For the L4 pass-through + PROXY protocol + mTLS topology, see
 [TLS, mTLS, and the PROXY protocol](#tls-mtls-and-the-proxy-protocol-reverse-proxy-deployment)
